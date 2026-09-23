@@ -3,6 +3,10 @@
 Руководство для Claude Code по работе с этим репозиторием. Go-сервис на Clean Architecture + DDD,
 с gRPC/grpc-gateway, Postgres (pgx), proto-генерацией через Makefile.
 
+**Перед любой работой прочитать `docs/bot-spec.md`** — что строим (Telegram-бот над MCP-сервером
+pulse), принятые решения и план первой версии. Скелет ниже — из gotemplate; лишнее для бота
+(gRPC/proto и т.п.) будет убрано, и этот файл обновится.
+
 Конвенции этого стека вынесены в глобальные Claude Code скиллы (`crud`, `mobone`,
 `golang-service`, `golang-samber-lo`) — они подхватываются автоматически по описанию.
 
