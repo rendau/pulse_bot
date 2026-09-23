@@ -10,16 +10,15 @@ func (e Err) Error() string {
 
 // common errors
 const (
-	ServiceNA         = Err("service_not_available")
-	NotImplemented    = Err("not_implemented")
-	InvalidConfig     = Err("invalid_config")
-	NoPermission      = Err("no_permission")
-	ObjectNotFound    = Err("object_not_found")
-	NoRows            = Err("err_no_rows")
-	NotAuthorized     = Err("not_authorized")
-	InvalidRequest    = Err("invalid_request")
-	IncorrectPageSize = Err("incorrect_page_size")
-	IdRequired        = Err("id_required")
+	ServiceNA      = Err("service_not_available")
+	NotImplemented = Err("not_implemented")
+	InvalidConfig  = Err("invalid_config")
+	NoPermission   = Err("no_permission")
+	ObjectNotFound = Err("object_not_found")
+	NotAuthorized  = Err("not_authorized")
+	InvalidRequest = Err("invalid_request")
+	// Busy — в чате уже идёт разбор предыдущего вопроса
+	Busy = Err("busy")
 )
 
 type ErrFull struct {

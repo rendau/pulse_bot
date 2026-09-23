@@ -1,14 +1,20 @@
 # CLAUDE.md
 
-Руководство для Claude Code по работе с этим репозиторием. Go-сервис на Clean Architecture + DDD,
-с gRPC/grpc-gateway, Postgres (pgx), proto-генерацией через Makefile.
+Руководство для Claude Code по работе с этим репозиторием. Go-сервис на Clean Architecture + DDD:
+Telegram-бот (long polling, `github.com/go-telegram/bot`), который отвечает на вопросы об
+инфраструктуре через LLM с инструментами MCP-сервера pulse (`github.com/modelcontextprotocol/go-sdk`,
+клиент). LLM — за провайдер-независимой абстракцией, в v1 — OpenAI (`github.com/openai/openai-go/v3`,
+Responses API, `gpt-6-sol`).
 
-**Перед любой работой прочитать `docs/bot-spec.md`** — что строим (Telegram-бот над MCP-сервером
-pulse), принятые решения и план первой версии. Скелет ниже — из gotemplate; лишнее для бота
-(gRPC/proto и т.п.) будет убрано, и этот файл обновится.
+**Перед любой работой прочитать `docs/bot-spec.md`** — что строим, принятые решения, согласованная
+первая версия и что отложено на потом.
 
-Конвенции этого стека вынесены в глобальные Claude Code скиллы (`crud`, `mobone`,
-`golang-service`, `golang-samber-lo`) — они подхватываются автоматически по описанию.
+Согласованные отклонения от шаблона gotemplate:
+- gRPC/grpc-gateway/proto/swagger, Postgres и миграции, трассировка убраны: транспорт — Telegram,
+  история диалогов — в памяти (v1).
+
+Конвенции этого стека вынесены в глобальные Claude Code скиллы (`golang-service`,
+`golang-samber-lo`, `crud`, `mobone`) — они подхватываются автоматически по описанию.
 
 ---
 
@@ -17,47 +23,48 @@ pulse), принятые решения и план первой версии. �
 ### Верхний уровень
 - `cmd/main.go` — entrypoint, поднимает `internal/app.App`.
 - `internal/` — бизнес-логика и инфраструктура (закрытые пакеты).
-- `api/proto/` — исходные `.proto` данного сервиса.
-- `pkg/proto/` — сгенерированный код protobuf/grpc/gateway (**не редактировать вручную**).
-- `migrations/` — SQL миграции Postgres.
-- `docs/` — swagger JSON и статические доки, выдаются через `/docs/*`.
-- `vendor-proto/` — внешние `.proto` зависимости (обновляются Makefile).
-- `Dockerfile`, `Makefile` — сборка, запуск, генерация proto.
-- `.env.example`, `.migrate_scripts.example` — примеры окружения и миграций.
+- `docs/` — вводная и статические доки, выдаются через `/docs/*`.
+- `Dockerfile`, `Makefile` — сборка (`make build` подставляет версию через ldflags).
+- `.env.example` — пример окружения.
 
 ### Внутренние пакеты (`internal/`)
-- `internal/app/` — сборка приложения: серверы, миграции, метрики, трассировка, HTTP-gateway, DI.
-  - `app.go` — граф зависимостей и запуск компонентов.
-  - `grpc.go` — gRPC сервер + интерсепторы ошибок/метрик/трейсинга.
-  - `grpc_gateway.go` — HTTP-gateway, CORS, error handler.
-  - `system_http_server.go` — системный HTTP-сервер (порт 3003): /healthcheck, /docs/*, /metrics.
-  - `migration.go` — запуск миграций из `migrations/`.
-- `internal/config/` — конфигурация через env (см. `config.go`).
-- `internal/handler/` — транспортный слой.
-  - `grpc/` — gRPC handlers.
-  - `grpc/dto/` — преобразование protobuf ↔ domain models.
-  - могут быть и другие транспортные каналы.
-- `internal/usecase/` — usecase-слой (валидация, оркестрация сервисов и доменных сервисов).
-- `internal/domain/` — доменная модель, сервисы и репозитории.
-  - `*/model/` — доменные структуры (entity).
-  - `*/service/` — доменные сервисы (инварианты/логика).
-  - `*/repo/` — репозитории.
-  - `common/` — общие модели/утилиты/PG базовый репозиторий.
-- `internal/service/` — сервисы (фоновые/инфраструктурные), для переиспользования или выделения логики.
+- `internal/app/` — сборка приложения: DI, запуск Telegram-бота и системного HTTP-сервера.
+  - `app.go` — граф зависимостей, выбор LLM-провайдера по `LLM_PROVIDER`, жизненный цикл.
+  - `system_http_server.go` — системный HTTP-сервер (`SYSTEM_HTTP_PORT`, дефолт 3003):
+    /healthcheck, /docs/*, /metrics.
+- `internal/config/` — конфигурация через env (`config.go`).
+- `internal/handler/telegram/` — транспорт: личные сообщения, команды `/start` `/help` `/reset`,
+  «печатает…», отправка ответа (Markdown → Telegram HTML, нарезка под 4096, фолбэк на plain text),
+  тексты ответов бота — `texts.go`.
+- `internal/usecase/chat/` — вопрос: белый список, «один вопрос за раз на чат», история, агент,
+  метрики вопросов.
+- `internal/domain/dialog/` — история диалога: пары «вопрос — итоговый ответ» (без вызовов
+  инструментов), последние N, сброс после тишины; `repo/mem` — в памяти процесса.
+- `internal/service/` — сервисные модули (раскладка — скилл `golang-service`):
+  - `agent` — агентный цикл: шаги модели, параллельные вызовы pulse (`errgroup`), лимит вызовов
+    и времени (последняя минута — только на финальный ответ, без инструментов), системный промпт
+    (`service/constant/prompts.go`), метрики LLM и инструментов.
+  - `llm` — провайдер-независимый контракт: фасад `Provider` (`interface.go`), модели шага
+    (`model/`). Адаптеры — `llm/<provider>/service`; сейчас `openai`.
+  - `pulse` — MCP-клиент pulse: ленивое подключение, переподключение при потере сессии,
+    bearer-токен, каталог инструментов перечитывается на каждый разбор.
+- `internal/infra/httpx/` — единая фабрика http-клиентов (таймауты, лимиты; все клиенты только через неё).
+- `internal/infra/metrics/` — реестр Prometheus.
+- `internal/util/tgmd/` — Markdown → Telegram HTML и нарезка сообщения (с тестами).
 - `internal/errs/` и `internal/constant/` — общие коды ошибок и константы.
 
 ---
 
 ## Архитектура: слои и зависимости
 
-- **Transport** (`internal/handler/grpc/*`):
-  - Работает только с protobuf DTO и usecase-интерфейсами.
+- **Transport** (`internal/handler/telegram`):
+  - Работает только с usecase-интерфейсами и моделями usecase.
   - Не обращается напрямую к репозиториям и сервисам.
 - **Usecase** (`internal/usecase/*`):
   - Входной слой от транспортного слоя (запросы от внешних систем).
-  - Валидация входных параметров.
+  - Валидация входных параметров и доступ (белый список).
   - Оркестрация доменных сервисов и сервисов `internal/service/*`.
-  - Вход/выход — доменные модели (не protobuf).
+  - Вход/выход — доменные модели и модели usecase.
   - Желательно не обращается в соседние usecases.
 - **Domain** (`internal/domain/*`):
   - `model/` — структуры данных, сущности (entity).
@@ -71,7 +78,7 @@ pulse), принятые решения и план первой версии. �
   - Может использовать другие сервисы `internal/service/*` и доменные сервисы `internal/domain/*/service`.
   - Не обращается в usecase слой.
 - **Composition** (`internal/app/`):
-  - Сборка зависимостей, запуск серверов, миграций, фоновых сервисов.
+  - Сборка зависимостей, запуск бота и серверов, фоновых сервисов.
 
 ### Правило зависимостей
 ```
@@ -85,41 +92,38 @@ domain service → repo
 - Обратные зависимости **запрещены**.
 - К `repo` слою доступ только из `domain service`.
 
-### Хранилища
-- Postgres: все доменные entities (см. `migrations/*`).
-- **Имена таблиц всегда в единственном числе**, без plural: `usr`, `app`, `secret`, `item`
-  (не `usrs`, `apps`, `secrets`, `items`). То же значение указывается в `TableName` репозитория.
-
-### Миграции
-- Файлы в `migrations/` в формате `NNNNNN_<name>.up.sql` / `.down.sql` (golang-migrate).
-- В `down`-миграциях во всех командах `DROP` обязательно указывать `CASCADE`
-  (напр. `drop table if exists <table> cascade;`).
-- В `down` объекты удаляются в порядке, обратном `up` (с учётом внешних ключей).
-
-### API
-- gRPC сервисы: `api/proto/pulse_bot_v1/*`.
-- HTTP-gateway: через grpc-gateway + swagger (`docs/api.swagger.json`).
-- DTO маппинг: `internal/handler/grpc/dto`.
-- **REST-пути (route paths) всегда в единственном числе**, без plural:
-  `/secret`, `/secret/{id}`, `/app`, `/item` (не `/secrets`, `/apps`, `/items`).
-- **Пагинация: во всех `list` запросах `page` начинается с `0`** (нумерация страниц с нуля).
-- **Для update использовать HTTP-метод `PUT`** (не `PATCH`): `put: "/<entity>/{id}"`.
+### LLM-провайдеры
+- Агентный цикл знает только контракт `internal/service/llm/model` (шаг: запрос → текст и/или
+  вызовы инструментов). Служебное состояние провайдера внутри разбора — `Response.State`
+  (непрозрачно для цикла); между вопросами в историю идёт только текст.
+- Новый провайдер = новый адаптер `internal/service/llm/<provider>/service` + ветка в `switch` по
+  `LLM_PROVIDER` в `app.go` + константа `constant.LlmProvider*`. Цикл не трогаем.
+- OpenAI: Responses API **без хранения** (`store=false`): в запросы уходят логи и конфигурация
+  сервисов из pulse. Контекст разбора (вход + выходные элементы, включая
+  `reasoning.encrypted_content`) накапливается в `State` и отправляется целиком.
+- Модель и параметры — только из конфига (`LLM_MODEL`, `LLM_REASONING_EFFORT`), не в коде.
+- Системный промпт стабилен между разборами (на нём держится кэш префикса у провайдера): всё
+  переменное — время, вопрос — в сообщении пользователя.
 
 ### Ошибки и валидация
-- Семантические ошибки — через `internal/errs` (см. gRPC interceptor в `internal/app/grpc.go`).
-- Валидация параметров — в usecase.
+- Семантические ошибки — через `internal/errs` (`NotAuthorized`, `Busy`, `InvalidRequest`);
+  handler переводит их в тексты ответа.
+- Ошибка вызова инструмента не роняет разбор: уходит модели текстом с префиксом `ERROR: `.
 - Нельзя пробрасывать ошибки наружу без wrapping (оборачивать в `fmt.Errorf("...: %w")`).
 - Для работы с ошибками всегда используй `errors.Is` и `errors.AsType`. Избегай прямого
   сравнения ошибок (`==`) и type assertion (`err.(*MyError)`), чтобы корректно обрабатывать
   обёрнутые ошибки.
 
 ### Правила изменения кода
-- gRPC DTO не должны протекать в доменные сервисы.
-- `pkg/proto` и `docs/api.swagger.json` — генерируемые файлы (обновляются через Makefile).
+- Модели usecase и сервисов не должны протекать в транспорт Telegram дальше handler'а.
 - В тестах всегда предпочитай `testify`: `require` для проверок, прерывающих тест,
   и `assert` для остальных утверждений.
 - При реализации worker pool / параллельной обработки используй `errgroup`
   (golang.org/x/sync/errgroup), а не ручное управление горутинами через `sync.WaitGroup` + каналы.
+- http-клиенты — только через `internal/infra/httpx`. Клиенты внешних API с ключами (Telegram,
+  OpenAI) — с проверкой TLS (`VerifyTLS: true`); у клиента LLM `ResponseHeaderTimeout` = таймаут
+  разбора (ответ без стриминга приходит целиком после генерации); у Telegram http-таймаут больше
+  long polling.
 
 ---
 
@@ -131,8 +135,8 @@ domain service → repo
 
 ### Тип `App`
 - В поля выносится **только то, чем нужно управлять после `Init`**: то, что надо явно
-  останавливать (серверы), ждать (фоновые сервисы/обработчики), закрывать (трассировщик,
-  pgx pool), а также корневой `ctx` с его `ctxCancel` и `exitCode`.
+  останавливать (серверы, бот), ждать (обработка сообщений), закрывать (сессия pulse), а также
+  корневой `ctx` с его `ctxCancel` и `exitCode`.
 - Локальные звенья графа (repo, service, usecase, handler), которые нужны только для сборки и
   сразу передаются дальше, **не** выносятся в поля — это локальные переменные внутри `Init`.
 
@@ -140,44 +144,41 @@ domain service → repo
 - Группируются блоками с пустой строкой между группами: стандартная библиотека → внешние
   зависимости → внутренние пакеты проекта.
 - Внутренние пакеты-конструкторы импортируются с суффиксом-алиасом `P`, и в алиасе прописывается весь путь в camel-case
-  (например, `internal/service/mdm` -> `serviceMdmP`, `internal/handler/grpc` -> `handlerGrpcP`, `internal/service/2gis/service` -> `service2gisServiceP`).
+  (например, `internal/service/pulse/service` -> `servicePulseServiceP`, `internal/handler/telegram` -> `handlerTelegramP`).
 
 ### Методы-фазы жизненного цикла
 Фиксированный набор методов, каждый делает ровно одно:
 - `Init` — создание и связывание всех зависимостей.
 - `PreStartHook` — действия перед стартом.
-- `Start` — запуск серверов и фоновых сервисов.
+- `Start` — запуск бота и серверов.
 - `Listen` — блокировка до сигнала ОС (`SIGINT`/`SIGTERM`).
-- `Stop` — отмена контекста и graceful-остановка серверов.
-- `WaitJobs` — ожидание завершения фоновых задач.
-- `Exit` — закрытие ресурсов и выход с `exitCode`.
+- `Stop` — отмена контекста (останавливает long polling и отменяет идущие разборы — пользователю
+  уходит «бот перезапускается») и graceful-остановка серверов.
+- `WaitJobs` — ожидание опроса Telegram и обработки принятых сообщений.
+- `Exit` — закрытие ресурсов (сессия pulse) и выход с `exitCode`.
 
 ### Стиль `Init`
-- Сборка идёт **сверху вниз в порядке зависимостей**: инфраструктура (логгер, трассировка,
-  pgx pool, кэш, миграции) → доменные блоки → сервисы → серверы.
+- Сборка идёт **сверху вниз в порядке зависимостей**: инфраструктура (логгер) → сервисы (llm,
+  pulse, agent) → доменные блоки → usecase → транспорт → серверы.
 - Каждый логический блок предваряется коротким комментарием-меткой в нижнем регистре
-  (`// ord`, `// checkout`, `// grpc server`).
-- Внутри блока цепочка строится единообразно:
-  `repo := ...New(...)` → `service := ...New(repo)` → `usecase := ...New(service)` →
-  `handler := ...New(usecase)`.
+  (`// llm`, `// dialog`, `// telegram`).
 - Блоки, которым не нужны внешние переменные, оборачиваются в анонимный блок `{ ... }` —
   для ограничения области видимости и визуального разделения.
 
 ### Обработка ошибок при инициализации
 - Используется хелпер `errCheck(err, msg)`: на этапе сборки любая ошибка фатальна
   (лог + `os.Exit(1)`). Ошибки из `Init` наверх не пробрасываются.
-- Один заранее объявленный `var err error` переиспользуется по ходу `Init`.
+- Недоступный pulse — **не** ошибка старта: MCP-сессия поднимается лениво, бот отвечает
+  «не удалось получить ответ».
 
 ### Парность Start / WaitJobs / Stop
 - Для каждого фонового компонента, запускаемого в `Start()`, есть симметричный вызов в
   `WaitJobs()` (`.Wait()`) и/или в `Stop()`. **Порядок перечисления компонентов одинаков во
   всех трёх методах** — это упрощает чтение и сверку.
 
-### Конфигурация и опциональные компоненты
+### Конфигурация
 - Все параметры берутся из единого глобального конфига (`config.Conf.*`) прямо в месте
-  использования.
-- Опциональные компоненты включаются по условию на конфиг (`if config.Conf.X != "" { ... }`),
-  с фолбэком на in-memory/no-op реализацию через общий интерфейс.
+  использования. Весь env сервиса — в kusec (app `pulse_bot`), у деплоймента своих env нет.
 
 ---
 
@@ -185,35 +186,25 @@ domain service → repo
 
 ### Запуск
 - Entry: `cmd/main.go` → `internal/app.App`.
-- На старте выполняются:
-  - загрузка env (autoload `.env`),
-  - настройка логгера/метрик/трейсинга,
-  - pgx pool,
-  - миграции (`internal/app/migration.go`),
-  - запуск gRPC + HTTP-gateway.
+- На старте: загрузка env (autoload `.env`), логгер, `getMe` в Telegram (невалидный токен — фатально),
+  запуск long polling и системного HTTP-сервера.
 
 ### Переменные окружения
-- Описаны в `internal/config/config.go`.
-- Примеры: `.env.example`, `.migrate_scripts.example`.
+- Описаны в `internal/config/config.go`, пример — `.env.example`.
+- Обязательные: `TELEGRAM_BOT_TOKEN`, `PULSE_MCP_URL`; для OpenAI — `OPENAI_API_KEY`.
+  Пустой `TELEGRAM_ALLOWED_USERS` — бот отказывает всем (предупреждение в логе).
 
-### Системный HTTP-сервер
-- Отдельный сервер на порту `3003` (`const systemHttpPort` в `internal/app/system_http_server.go`).
-- Обслуживает служебные ручки: `/healthcheck`, `/docs/*`, `/metrics`.
-
-### Метрики и трассировка
-- Prometheus метрики на `/metrics` (системный сервер, порт 3003) при `WITH_METRICS=true`.
-  Используется `metrics.Registry`, а не дефолтный `promhttp.Handler()`.
-- Трейсинг Jaeger включается при `WITH_TRACING=true` и `JAEGER_ADDRESS`.
-
-### Документация и healthcheck
-- `/healthcheck` — HTTP healthcheck (200 OK), порт 3003.
-- `/docs/*` — статические docs + swagger (`docs/api.swagger.json`), порт 3003.
+### Метрики
+- Prometheus на `/metrics` (системный сервер) при `WITH_METRICS=true`, реестр `metrics.Registry`.
+- `question_total{outcome}`, `answer_duration_seconds`, `llm_request_total{provider,status}`,
+  `llm_request_duration_seconds`, `llm_tokens_total{provider,type}`, `tool_call_total{tool,status}`,
+  `tool_call_duration_seconds`, `agent_run_steps`.
 
 ### Сборка
 - `make build` создаёт бинарник `cmd/build/svc`.
-- Dockerfile копирует бинарник, `docs/` и `migrations/` в `/app`.
+- Dockerfile копирует бинарник и `docs/` в `/app`.
 
 ### Flow проверки изменений
 ```
-make generate-proto  →  gofmt  →  go test ./...  →  go run ./cmd/.
+gofmt  →  go vet ./...  →  go test ./...  →  go run ./cmd/.
 ```

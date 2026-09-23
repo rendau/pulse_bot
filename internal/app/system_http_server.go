@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"net/http"
 	"time"
 
@@ -10,11 +9,9 @@ import (
 	"github.com/mechta-market/pulse_bot/internal/infra/metrics"
 )
 
-const systemHttpPort = 3003
-
 // SystemHttpServerCreate builds the system HTTP server that exposes
 // service endpoints: /healthcheck, /docs/*, /metrics.
-func SystemHttpServerCreate() *http.Server {
+func SystemHttpServerCreate(port string) *http.Server {
 	mux := http.NewServeMux()
 
 	// healthcheck
@@ -30,7 +27,7 @@ func SystemHttpServerCreate() *http.Server {
 	mux.Handle("/metrics", promhttp.HandlerFor(metrics.Registry, promhttp.HandlerOpts{}))
 
 	return &http.Server{
-		Addr:              fmt.Sprintf(":%d", systemHttpPort),
+		Addr:              ":" + port,
 		Handler:           mux,
 		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       time.Minute,

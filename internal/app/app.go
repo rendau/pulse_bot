@@ -4,32 +4,43 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
-	_ "github.com/samber/lo"
-
-	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"github.com/go-telegram/bot"
 
 	"github.com/mechta-market/pulse_bot/internal/config"
 	"github.com/mechta-market/pulse_bot/internal/constant"
+	domainDialogRepoMemP "github.com/mechta-market/pulse_bot/internal/domain/dialog/repo/mem"
+	domainDialogServiceP "github.com/mechta-market/pulse_bot/internal/domain/dialog/service"
+	handlerTelegramP "github.com/mechta-market/pulse_bot/internal/handler/telegram"
+	"github.com/mechta-market/pulse_bot/internal/infra/httpx"
+	serviceAgentServiceP "github.com/mechta-market/pulse_bot/internal/service/agent/service"
+	"github.com/mechta-market/pulse_bot/internal/service/llm"
+	serviceLlmOpenaiServiceP "github.com/mechta-market/pulse_bot/internal/service/llm/openai/service"
+	servicePulseServiceP "github.com/mechta-market/pulse_bot/internal/service/pulse/service"
+	usecaseChatP "github.com/mechta-market/pulse_bot/internal/usecase/chat"
+)
+
+const (
+	// telegramPollTimeout — long polling getUpdates; http-таймауты клиента Telegram —
+	// с запасом поверх него
+	telegramPollTimeout = 30 * time.Second
+	telegramHttpTimeout = 45 * time.Second
 )
 
 type App struct {
-	globalTracerCloser io.Closer
+	pulse *servicePulseServiceP.Service
 
-	pgpool *pgxpool.Pool
+	telegramBot     *bot.Bot
+	telegramHandler *handlerTelegramP.Handler
+	telegramWg      sync.WaitGroup
 
-	grpcServer       *GrpcServer
-	httpServer       *http.Server
 	systemHttpServer *http.Server
 
 	ctx       context.Context
@@ -45,92 +56,87 @@ func (a *App) Init() {
 
 	// logger
 	initLogger(config.Conf.Debug, config.Conf.LogLevel)
+	slog.Info("starting " + constant.ServiceName + " " + constant.Version)
 
-	// globalTracer
-	{
-		if config.Conf.WithTracing && config.Conf.JaegerAddress != "" {
-			slog.Info("tracing enabled")
-			_, a.globalTracerCloser, err = tracerInitGlobal(config.Conf.JaegerAddress, constant.ServiceName)
-			errCheck(err, "tracerInitGlobal")
-		}
+	// llm
+	var llmProvider llm.Provider
+	switch config.Conf.LlmProvider {
+	case constant.LlmProviderOpenai:
+		llmProvider = serviceLlmOpenaiServiceP.New(
+			serviceLlmOpenaiServiceP.Config{
+				ApiKey:          config.Conf.OpenaiApiKey,
+				BaseUrl:         config.Conf.OpenaiBaseUrl,
+				Model:           config.Conf.LlmModel,
+				ReasoningEffort: config.Conf.LlmReasoningEffort,
+				MaxOutputTokens: config.Conf.LlmMaxOutputTokens,
+			},
+			// ответ без стриминга приходит целиком после генерации (с reasoning —
+			// минуты): заголовков ждём до общего таймаута разбора, его держит контекст
+			httpx.New(httpx.Config{ResponseHeaderTimeout: config.Conf.AgentTimeout, VerifyTLS: true}),
+		)
+	default:
+		errCheck(fmt.Errorf("unknown LLM_PROVIDER %q", config.Conf.LlmProvider), "llm")
+	}
+	slog.Info("llm", "provider", llmProvider.Name(), "model", config.Conf.LlmModel, "reasoning_effort", config.Conf.LlmReasoningEffort)
+
+	// pulse (MCP)
+	a.pulse = servicePulseServiceP.New(
+		config.Conf.PulseMcpUrl,
+		config.Conf.PulseMcpToken,
+		// таймаут вызова инструмента держит контекст разбора
+		httpx.New(httpx.Config{ResponseHeaderTimeout: 2 * time.Minute}),
+	)
+
+	// agent
+	agentService := serviceAgentServiceP.New(
+		serviceAgentServiceP.Config{
+			MaxToolCalls: config.Conf.AgentMaxToolCalls,
+			Timeout:      config.Conf.AgentTimeout,
+		},
+		llmProvider, a.pulse,
+	)
+
+	// dialog
+	dialogRepo := domainDialogRepoMemP.New()
+	dialogService := domainDialogServiceP.New(
+		domainDialogServiceP.Config{MaxTurns: config.Conf.HistoryMaxTurns, Ttl: config.Conf.HistoryTtl},
+		dialogRepo,
+	)
+
+	// chat
+	chatUsecase := usecaseChatP.New(
+		usecaseChatP.Config{AllowedUsers: config.Conf.TelegramAllowedUsers},
+		dialogService, agentService,
+	)
+	if len(config.Conf.TelegramAllowedUsers) == 0 {
+		slog.Warn("TELEGRAM_ALLOWED_USERS is empty: bot will deny everyone")
 	}
 
-	// pgpool
-	a.pgpool, err = initPgPool(config.Conf.PgDsn)
-	errCheck(err, "pgpool init")
-
-	// migrations
+	// telegram
 	{
-		runMigrations()
-		slog.Info("PG-migrations have been successfully applied")
-	}
+		a.telegramHandler = handlerTelegramP.New(chatUsecase)
 
-	// grpc server
-	{
-		a.grpcServer = NewGrpcServer("main", func(server *grpc.Server) {
-			// server registers
-		})
-	}
-
-	// http-gw server
-	{
-		var handler http.Handler
-
-		handler, err = GrpcGatewayCreateHandler(func(mux *runtime.ServeMux) error {
-			opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
-
-			var conn *grpc.ClientConn
-			conn, err = grpc.NewClient("localhost:"+config.Conf.GrpcPort, opts...)
-			errCheck(err, "grpc.Dial")
-
-			// register grpc handlers
-			handlers := []func(context.Context, *runtime.ServeMux, *grpc.ClientConn) error{
-				// server registers
-			}
-			for _, h := range handlers {
-				err = h(context.Background(), mux, conn)
-				if err != nil {
-					return fmt.Errorf("grpc-gateway: register grpc-handler: %w", err)
+		a.telegramBot, err = bot.New(config.Conf.TelegramBotToken,
+			bot.WithHTTPClient(telegramPollTimeout, httpx.New(httpx.Config{
+				Timeout:               telegramHttpTimeout,
+				ResponseHeaderTimeout: telegramHttpTimeout,
+				VerifyTLS:             true,
+			})),
+			bot.WithAllowedUpdates(bot.AllowedUpdates{"message"}),
+			bot.WithDefaultHandler(a.telegramHandler.Handle),
+			bot.WithNotAsyncHandlers(),
+			bot.WithErrorsHandler(func(err error) {
+				if a.ctx.Err() == nil {
+					slog.Error("telegram", "error", err)
 				}
-			}
-
-			// custom http handlers
-			httpHandlers := []struct {
-				method  string
-				path    string
-				handler runtime.HandlerFunc
-			}{
-				{
-					"GET", "/tst",
-					func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
-						slog.Info("test error", "error", errors.New("test error"))
-					},
-				},
-			}
-			for _, h := range httpHandlers {
-				err = mux.HandlePath(h.method, h.path, h.handler)
-				if err != nil {
-					return fmt.Errorf("grpc-gateway: register http-handler: %w", err)
-				}
-			}
-
-			return nil
-		})
-		errCheck(err, "grpcGatewayCreateHandler")
-
-		// server
-		a.httpServer = &http.Server{
-			Addr:              ":" + config.Conf.HttpPort,
-			Handler:           handler,
-			ReadHeaderTimeout: 2 * time.Second,
-			ReadTimeout:       time.Minute,
-			MaxHeaderBytes:    300 * 1024,
-		}
+			}),
+		)
+		errCheck(err, "telegram bot init")
 	}
 
 	// system http server (healthcheck, docs, metrics)
 	{
-		a.systemHttpServer = SystemHttpServerCreate()
+		a.systemHttpServer = SystemHttpServerCreate(config.Conf.SystemHttpPort)
 	}
 }
 
@@ -141,21 +147,12 @@ func (a *App) PreStartHook() {
 func (a *App) Start() {
 	slog.Info("Starting")
 
-	// grpc server
+	// telegram (long polling)
 	{
-		err := a.grpcServer.Start()
-		errCheck(err, "grpcServer.Start")
-	}
-
-	// http-gw server
-	{
-		go func() {
-			err := a.httpServer.ListenAndServe()
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				// errCheck(err, "http-server stopped")
-			}
-		}()
-		slog.Info("http-server started " + a.httpServer.Addr)
+		a.telegramWg.Go(func() {
+			a.telegramBot.Start(a.ctx)
+		})
+		slog.Info("telegram bot started")
 	}
 
 	// system http server
@@ -163,7 +160,7 @@ func (a *App) Start() {
 		go func() {
 			err := a.systemHttpServer.ListenAndServe()
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				// errCheck(err, "system-http-server stopped")
+				errCheck(err, "system-http-server stopped")
 			}
 		}()
 		slog.Info("system-http-server started " + a.systemHttpServer.Addr)
@@ -181,19 +178,8 @@ func (a *App) Listen() {
 func (a *App) Stop() {
 	slog.Info("Shutting down...")
 
-	// stop context
+	// stop context: останавливает long polling и отменяет идущие разборы
 	a.ctxCancel()
-
-	// http-gw server
-	{
-		ctx, ctxCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer ctxCancel()
-
-		if err := a.httpServer.Shutdown(ctx); err != nil {
-			slog.Error("http-server shutdown error", "error", err)
-			a.exitCode = 1
-		}
-	}
 
 	// system http server
 	{
@@ -205,25 +191,22 @@ func (a *App) Stop() {
 			a.exitCode = 1
 		}
 	}
-
-	// grpc server
-	a.grpcServer.Stop()
 }
 
 func (a *App) WaitJobs() {
 	slog.Info("waiting jobs")
+
+	// telegram: сначала опрос обновлений, затем обработка принятых сообщений
+	a.telegramWg.Wait()
+	a.telegramHandler.Wait()
 }
 
 func (a *App) Exit() {
 	slog.Info("Exit")
 
-	if a.globalTracerCloser != nil {
-		_ = a.globalTracerCloser.Close()
+	if err := a.pulse.Close(); err != nil {
+		slog.Warn("pulse session close", "error", err)
 	}
-
-	a.pgpool.Close()
-
-	// flush stdout
 
 	os.Exit(a.exitCode)
 }
