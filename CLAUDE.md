@@ -35,7 +35,7 @@ Responses API, `gpt-6-sol`).
   - `debug_http_server.go` — отладочный HTTP-сервер (`HTTP_PORT`, дефолт 80) с единственной ручкой
     `POST /debug/ask`; поднимается только при заданном `DEBUG_CHAT_TOKEN`.
 - `internal/config/` — конфигурация через env (`config.go`).
-- `internal/handler/telegram/` — транспорт: личные сообщения, команды `/start` `/help` `/reset`,
+- `internal/handler/telegram/` — транспорт: личные сообщения, команды `/start` `/help` `/reset` (и кнопка сброса под полем ввода),
   «печатает…», отправка ответа (Markdown → Telegram HTML, нарезка под 4096, фолбэк на plain text),
   тексты ответов бота — `texts.go`.
 - `internal/handler/debug/` — отладочная ручка `POST /debug/ask` (bearer `DEBUG_CHAT_TOKEN`): вопрос

@@ -113,6 +113,7 @@ func TestProcess_Replies(t *testing.T) {
 		{"start allowed", &fakeChat{}, 42, "/start", textWelcome},
 		{"start denied shows id", &fakeChat{}, 7, "/start", "Ваш Telegram ID: <code>7</code>"},
 		{"reset", &fakeChat{}, 42, "/reset@pulse_bot", textReset},
+		{"reset button", &fakeChat{}, 42, buttonReset, textReset},
 		{"denied question", &fakeChat{err: errs.NotAuthorized}, 7, "q", "<code>7</code>"},
 		{"busy", &fakeChat{err: errs.Busy}, 42, "q", textBusy},
 		{"not text", &fakeChat{}, 42, "", textNotText},
@@ -128,6 +129,36 @@ func TestProcess_Replies(t *testing.T) {
 
 			require.Len(t, sender.sent, 1)
 			assert.Contains(t, sender.sent[0].Text, tt.want)
+		})
+	}
+}
+
+func TestProcess_Keyboard(t *testing.T) {
+	tests := []struct {
+		name   string
+		chat   *fakeChat
+		userId int64
+		text   string
+		want   bool
+	}{
+		{"welcome", &fakeChat{}, 42, "/start", true},
+		{"reset", &fakeChat{}, 42, buttonReset, true},
+		{"answer", &fakeChat{answer: &chatModel.Answer{Text: "ок"}}, 42, "q", true},
+		{"denied", &fakeChat{}, 7, "/start", false},
+		{"busy", &fakeChat{err: errs.Busy}, 42, "q", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sender := &fakeSender{}
+			New(tt.chat).process(context.Background(), sender, message(tt.userId, tt.text))
+
+			require.Len(t, sender.sent, 1)
+			if tt.want {
+				assert.Equal(t, keyboard, sender.sent[0].ReplyMarkup)
+			} else {
+				assert.Nil(t, sender.sent[0].ReplyMarkup)
+			}
 		})
 	}
 }

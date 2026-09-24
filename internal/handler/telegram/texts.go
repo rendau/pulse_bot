@@ -4,12 +4,15 @@ import (
 	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
 )
 
+// buttonReset — надпись кнопки сброса; её нажатие приходит обычным текстом
+const buttonReset = "🔄 Начать заново"
+
 // тексты ответов бота (HTML)
 const (
 	textWelcome = "Привет! Я отвечаю на вопросы об инфраструктуре: что с сервисом, что с кластером, " +
 		"что поменялось перед падением. Факты беру из pulse — Kubernetes, Prometheus, Loki, Alertmanager, GitHub.\n\n" +
 		"Спрашивайте обычным текстом, например: <i>что с caravan?</i>\n\n" +
-		"/reset — начать разговор заново."
+		"Кнопка «" + buttonReset + "» или /reset — начать разговор заново."
 
 	textDenied = "Извините, доступ к боту ограничен. Ваш Telegram ID: <code>%d</code> — " +
 		"передайте его администратору бота."

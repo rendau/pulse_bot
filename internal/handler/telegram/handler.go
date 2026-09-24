@@ -31,6 +31,15 @@ const (
 	errorTextLimit = 300
 )
 
+// keyboard — постоянная кнопка сброса под полем ввода (вместо набора /reset руками).
+// Telegram держит её, пока не придёт другая клавиатура, поэтому достаточно
+// прикреплять к приветствию, сбросу и ответам.
+var keyboard = &models.ReplyKeyboardMarkup{
+	Keyboard:       [][]models.KeyboardButton{{{Text: buttonReset}}},
+	IsPersistent:   true,
+	ResizeKeyboard: true,
+}
+
 // Handler — транспорт Telegram: принимает сообщения из личных чатов и отвечает.
 // Сообщения обрабатываются параллельно (разные чаты не ждут друг друга);
 // Wait дожидается незаконченных при остановке.
@@ -79,14 +88,14 @@ func (h *Handler) process(ctx context.Context, sender SenderI, msg *models.Messa
 			h.reply(ctx, sender, msg, fmt.Sprintf(textDenied, userId))
 			return
 		}
-		h.reply(ctx, sender, msg, textWelcome)
+		h.replyWithKeyboard(ctx, sender, msg, textWelcome)
 		return
-	case isCommand(text, "/reset"):
+	case isCommand(text, "/reset"), text == buttonReset:
 		if err := h.chat.Reset(ctx, chatId, userId); err != nil {
 			h.replyError(ctx, sender, msg, err)
 			return
 		}
-		h.reply(ctx, sender, msg, textReset)
+		h.replyWithKeyboard(ctx, sender, msg, textReset)
 		return
 	}
 
@@ -144,6 +153,7 @@ func (h *Handler) sendAnswer(ctx context.Context, sender SenderI, msg *models.Me
 		}
 		if i == 0 {
 			params.ReplyParameters = &models.ReplyParameters{MessageID: msg.ID, AllowSendingWithoutReply: true}
+			params.ReplyMarkup = keyboard
 		}
 
 		if _, err := sender.SendMessage(ctx, params); err != nil {
@@ -182,11 +192,21 @@ func (h *Handler) replyError(ctx context.Context, sender SenderI, msg *models.Me
 
 // reply отправляет готовый HTML.
 func (h *Handler) reply(ctx context.Context, sender SenderI, msg *models.Message, text string) {
+	h.send(ctx, sender, msg, text, nil)
+}
+
+// replyWithKeyboard — reply с кнопкой сброса.
+func (h *Handler) replyWithKeyboard(ctx context.Context, sender SenderI, msg *models.Message, text string) {
+	h.send(ctx, sender, msg, text, keyboard)
+}
+
+func (h *Handler) send(ctx context.Context, sender SenderI, msg *models.Message, text string, markup models.ReplyMarkup) {
 	_, err := sender.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:          msg.Chat.ID,
 		Text:            text,
 		ParseMode:       models.ParseModeHTML,
 		ReplyParameters: &models.ReplyParameters{MessageID: msg.ID, AllowSendingWithoutReply: true},
+		ReplyMarkup:     markup,
 	})
 	if err != nil {
 		slog.Error("telegram: send message", "chat_id", msg.Chat.ID, "error", err)
