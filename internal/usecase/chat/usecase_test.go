@@ -100,3 +100,14 @@ func TestAsk_BusyPerChat(t *testing.T) {
 	_, err = uc.Ask(ctx, &model.Question{ChatId: 1, UserId: 42, Text: "третий"})
 	assert.NoError(t, err)
 }
+
+func TestAllowAll(t *testing.T) {
+	dialog := dialogServiceP.New(dialogServiceP.Config{MaxTurns: 10, Ttl: time.Hour}, mem.New())
+	uc := New(Config{AllowAll: true}, dialog, &fakeAgent{result: &agentModel.Result{Answer: "ок", Steps: 2, ToolCalls: 1}})
+
+	assert.True(t, uc.Allowed(0))
+
+	ans, err := uc.Ask(context.Background(), &model.Question{ChatId: 1, Text: "что с кластером?"})
+	require.NoError(t, err)
+	assert.Equal(t, &model.Answer{Text: "ок", Steps: 2, ToolCalls: 1}, ans)
+}

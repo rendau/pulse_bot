@@ -14,6 +14,11 @@ var Conf = struct {
 
 	SystemHttpPort string `env:"SYSTEM_HTTP_PORT" envDefault:"3003"` // healthcheck, metrics, docs
 
+	// отладочная ручка POST /debug/ask (вопрос в обход Telegram, с ходом разбора):
+	// свой порт, bearer-токен; пустой токен — сервер не поднимается
+	HttpPort       string `env:"HTTP_PORT" envDefault:"80"`
+	DebugChatToken string `env:"DEBUG_CHAT_TOKEN"`
+
 	// telegram: long polling; отвечаем только пользователям из белого списка (user ID через запятую)
 	TelegramBotToken     string  `env:"TELEGRAM_BOT_TOKEN,required"`
 	TelegramAllowedUsers []int64 `env:"TELEGRAM_ALLOWED_USERS" envSeparator:","`

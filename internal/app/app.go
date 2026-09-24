@@ -18,6 +18,7 @@ import (
 	"github.com/mechta-market/pulse_bot/internal/constant"
 	domainDialogRepoMemP "github.com/mechta-market/pulse_bot/internal/domain/dialog/repo/mem"
 	domainDialogServiceP "github.com/mechta-market/pulse_bot/internal/domain/dialog/service"
+	handlerDebugP "github.com/mechta-market/pulse_bot/internal/handler/debug"
 	handlerTelegramP "github.com/mechta-market/pulse_bot/internal/handler/telegram"
 	"github.com/mechta-market/pulse_bot/internal/infra/httpx"
 	serviceAgentServiceP "github.com/mechta-market/pulse_bot/internal/service/agent/service"
@@ -41,6 +42,7 @@ type App struct {
 	telegramHandler *handlerTelegramP.Handler
 	telegramWg      sync.WaitGroup
 
+	debugHttpServer  *http.Server // nil — DEBUG_CHAT_TOKEN не задан
 	systemHttpServer *http.Server
 
 	ctx       context.Context
@@ -134,6 +136,19 @@ func (a *App) Init() {
 		errCheck(err, "telegram bot init")
 	}
 
+	// debug http server (/debug/ask): свой usecase чата — без белого списка
+	// (доступ по токену) и со своей историей, не пересекается с Telegram
+	if config.Conf.DebugChatToken != "" {
+		debugDialogService := domainDialogServiceP.New(
+			domainDialogServiceP.Config{MaxTurns: config.Conf.HistoryMaxTurns, Ttl: config.Conf.HistoryTtl},
+			domainDialogRepoMemP.New(),
+		)
+		debugChatUsecase := usecaseChatP.New(usecaseChatP.Config{AllowAll: true}, debugDialogService, agentService)
+		debugHandler := handlerDebugP.New(debugChatUsecase, config.Conf.DebugChatToken)
+
+		a.debugHttpServer = DebugHttpServerCreate(config.Conf.HttpPort, debugHandler, a.ctx)
+	}
+
 	// system http server (healthcheck, docs, metrics)
 	{
 		a.systemHttpServer = SystemHttpServerCreate(config.Conf.SystemHttpPort)
@@ -153,6 +168,17 @@ func (a *App) Start() {
 			a.telegramBot.Start(a.ctx)
 		})
 		slog.Info("telegram bot started")
+	}
+
+	// debug http server
+	if a.debugHttpServer != nil {
+		go func() {
+			err := a.debugHttpServer.ListenAndServe()
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCheck(err, "debug-http-server stopped")
+			}
+		}()
+		slog.Info("debug-http-server started " + a.debugHttpServer.Addr)
 	}
 
 	// system http server
@@ -180,6 +206,17 @@ func (a *App) Stop() {
 
 	// stop context: останавливает long polling и отменяет идущие разборы
 	a.ctxCancel()
+
+	// debug http server
+	if a.debugHttpServer != nil {
+		ctx, ctxCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer ctxCancel()
+
+		if err := a.debugHttpServer.Shutdown(ctx); err != nil {
+			slog.Error("debug-http-server shutdown error", "error", err)
+			a.exitCode = 1
+		}
+	}
 
 	// system http server
 	{

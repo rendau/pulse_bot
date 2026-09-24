@@ -1,6 +1,8 @@
 package model
 
 import (
+	"time"
+
 	llmModel "github.com/mechta-market/pulse_bot/internal/service/llm/model"
 )
 
@@ -9,6 +11,14 @@ const (
 	IncompleteToolCalls = "tool_calls" // исчерпан лимит вызовов инструментов
 	IncompleteTimeout   = "timeout"    // исчерпано время на разбор
 	IncompleteOutput    = "output"     // ответ модели оборван провайдером (лимит токенов и т.п.)
+)
+
+// статусы вызова инструмента (ToolTrace.Status, метрики)
+const (
+	ToolStatusOk        = "ok"
+	ToolStatusError     = "error"      // вызов не удался (pulse недоступен и т.п.)
+	ToolStatusToolError = "tool_error" // инструмент ответил ошибкой (неверный параметр и т.п.)
+	ToolStatusSkipped   = "skipped"    // не выполнен: исчерпан лимит вызовов
 )
 
 // Turn — прошлая пара «вопрос — ответ» из истории чата.
@@ -34,4 +44,17 @@ type Result struct {
 	Steps     int // шагов модели
 	ToolCalls int // вызовов инструментов pulse
 	Usage     llmModel.Usage
+
+	// Trace — вызовы инструментов по порядку (ход разбора для отладки).
+	Trace []ToolTrace
+}
+
+// ToolTrace — вызов инструмента в ходе разбора.
+type ToolTrace struct {
+	Step      int // шаг модели, запросивший вызов (с 1)
+	Name      string
+	Arguments string
+	Status    string // ToolStatus*
+	Output    string // что ушло модели
+	Duration  time.Duration
 }

@@ -40,12 +40,17 @@ func init() {
 // Config — доступ к боту.
 type Config struct {
 	AllowedUsers []int64
+
+	// AllowAll — без белого списка: отладочная ручка, доступ к ней проверяет
+	// транспорт (bearer-токен).
+	AllowAll bool
 }
 
 type Usecase struct {
-	allowed map[int64]struct{}
-	dialog  DialogServiceI
-	agent   AgentI
+	allowAll bool
+	allowed  map[int64]struct{}
+	dialog   DialogServiceI
+	agent    AgentI
 
 	mu   sync.Mutex
 	busy map[int64]struct{} // чаты, где идёт разбор
@@ -53,15 +58,19 @@ type Usecase struct {
 
 func New(cfg Config, dialog DialogServiceI, agent AgentI) *Usecase {
 	return &Usecase{
-		allowed: lo.SliceToMap(cfg.AllowedUsers, func(id int64) (int64, struct{}) { return id, struct{}{} }),
-		dialog:  dialog,
-		agent:   agent,
-		busy:    map[int64]struct{}{},
+		allowAll: cfg.AllowAll,
+		allowed:  lo.SliceToMap(cfg.AllowedUsers, func(id int64) (int64, struct{}) { return id, struct{}{} }),
+		dialog:   dialog,
+		agent:    agent,
+		busy:     map[int64]struct{}{},
 	}
 }
 
 // Allowed — есть ли пользователь в белом списке.
 func (u *Usecase) Allowed(userId int64) bool {
+	if u.allowAll {
+		return true
+	}
 	_, ok := u.allowed[userId]
 	return ok
 }
@@ -132,7 +141,14 @@ func (u *Usecase) ask(ctx context.Context, chatId int64, text string) (*model.An
 		}
 	}
 
-	return &model.Answer{Text: result.Answer, Incomplete: result.Incomplete}, nil
+	return &model.Answer{
+		Text:       result.Answer,
+		Incomplete: result.Incomplete,
+		Steps:      result.Steps,
+		ToolCalls:  result.ToolCalls,
+		Usage:      result.Usage,
+		Trace:      result.Trace,
+	}, nil
 }
 
 // Reset забывает историю чата.

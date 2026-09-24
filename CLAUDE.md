@@ -32,10 +32,15 @@ Responses API, `gpt-6-sol`).
   - `app.go` — граф зависимостей, выбор LLM-провайдера по `LLM_PROVIDER`, жизненный цикл.
   - `system_http_server.go` — системный HTTP-сервер (`SYSTEM_HTTP_PORT`, дефолт 3003):
     /healthcheck, /docs/*, /metrics.
+  - `debug_http_server.go` — отладочный HTTP-сервер (`HTTP_PORT`, дефолт 80) с единственной ручкой
+    `POST /debug/ask`; поднимается только при заданном `DEBUG_CHAT_TOKEN`.
 - `internal/config/` — конфигурация через env (`config.go`).
 - `internal/handler/telegram/` — транспорт: личные сообщения, команды `/start` `/help` `/reset`,
   «печатает…», отправка ответа (Markdown → Telegram HTML, нарезка под 4096, фолбэк на plain text),
   тексты ответов бота — `texts.go`.
+- `internal/handler/debug/` — отладочная ручка `POST /debug/ask` (bearer `DEBUG_CHAT_TOKEN`): вопрос
+  боту в обход Telegram, в ответе — текст и ход разбора (вызовы инструментов, токены); JSON — `dto/`.
+  Свой экземпляр usecase чата: без белого списка (`AllowAll`) и со своей историей.
 - `internal/usecase/chat/` — вопрос: белый список, «один вопрос за раз на чат», история, агент,
   метрики вопросов.
 - `internal/domain/dialog/` — история диалога: пары «вопрос — итоговый ответ» (без вызовов
@@ -43,7 +48,7 @@ Responses API, `gpt-6-sol`).
 - `internal/service/` — сервисные модули (раскладка — скилл `golang-service`):
   - `agent` — агентный цикл: шаги модели, параллельные вызовы pulse (`errgroup`), лимит вызовов
     и времени (последняя минута — только на финальный ответ, без инструментов), системный промпт
-    (`service/constant/prompts.go`), метрики LLM и инструментов.
+    (`service/constant/prompts.go`), метрики LLM и инструментов; ход разбора — `Result.Trace`.
   - `llm` — провайдер-независимый контракт: фасад `Provider` (`interface.go`), модели шага
     (`model/`). Адаптеры — `llm/<provider>/service`; сейчас `openai`.
   - `pulse` — MCP-клиент pulse: ленивое подключение, переподключение при потере сессии,
@@ -193,6 +198,20 @@ domain service → repo
 - Описаны в `internal/config/config.go`, пример — `.env.example`.
 - Обязательные: `TELEGRAM_BOT_TOKEN`, `PULSE_MCP_URL`; для OpenAI — `OPENAI_API_KEY`.
   Пустой `TELEGRAM_ALLOWED_USERS` — бот отказывает всем (предупреждение в логе).
+
+### Отладочная ручка `/debug/ask`
+- Для проверки бота без Telegram (в т.ч. агентом Claude Code). Временная: доступ даёт только
+  `DEBUG_CHAT_TOKEN` из kusec; пустой токен — порт не слушается. Наружу — через ruto, только этот путь.
+- `POST /debug/ask`, `Authorization: Bearer <токен>`, тело:
+  `{"chat_id": 1, "text": "что с caravan?", "reset": false, "output_limit": 2000}`.
+  `chat_id` — номер беседы (своя история, с Telegram не пересекается); `reset: true` — забыть историю
+  перед вопросом (без `text` — только сброс); `output_limit` — байт ответа каждого инструмента в
+  `trace` (по умолчанию 2000, максимум 100 KB).
+- Ответ: `answer`, `incomplete`, `duration_ms`, `steps`, `tool_calls`, `usage`, `trace[]` (`step`,
+  `tool`, `arguments`, `status` ok/error/tool_error/skipped, `duration_ms`, `output_bytes`,
+  `truncated`, `output`). Ошибки — `{"error": ...}`: 401 токен, 400 тело/пустой текст, 409 в беседе
+  идёт разбор, 504 таймаут. Запрос синхронный, до `AGENT_TIMEOUT` (5 мин).
+- Токен у агента — в файле `~/.config/pulse_bot/debug_token` (подставлять через `$(cat …)`, не печатать).
 
 ### Метрики
 - Prometheus на `/metrics` (системный сервер) при `WITH_METRICS=true`, реестр `metrics.Registry`.

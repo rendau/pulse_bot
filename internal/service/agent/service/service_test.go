@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -120,6 +121,15 @@ func TestRun_ToolLoop(t *testing.T) {
 		{CallId: "c2", Output: localConstant.ToolErrorPrefix + "unknown service"},
 		{CallId: "c3", Output: localConstant.ToolErrorPrefix + "connection refused"},
 	}, second.ToolResults)
+
+	// ход разбора: вызовы по порядку, со статусами и тем, что ушло модели
+	require.Len(t, res.Trace, 3)
+	assert.Equal(t, []string{agentModel.ToolStatusOk, agentModel.ToolStatusToolError, agentModel.ToolStatusError},
+		lo.Map(res.Trace, func(tr agentModel.ToolTrace, _ int) string { return tr.Status }))
+	assert.Equal(t, 1, res.Trace[0].Step)
+	assert.Equal(t, "resolve_service", res.Trace[0].Name)
+	assert.JSONEq(t, `{"query":"caravan"}`, res.Trace[0].Arguments)
+	assert.Equal(t, second.ToolResults[2].Output, res.Trace[2].Output)
 }
 
 func TestRun_ToolCallsLimit(t *testing.T) {
@@ -149,6 +159,11 @@ func TestRun_ToolCallsLimit(t *testing.T) {
 		{CallId: "c2", Output: localConstant.ToolSkipped},
 		{CallId: "c3", Output: localConstant.ToolSkipped},
 	}, last.ToolResults)
+
+	require.Len(t, res.Trace, 3)
+	assert.Equal(t, agentModel.ToolStatusOk, res.Trace[0].Status)
+	assert.Equal(t, agentModel.ToolStatusSkipped, res.Trace[1].Status)
+	assert.Equal(t, 2, res.Trace[2].Step)
 }
 
 func TestRun_Timeout(t *testing.T) {

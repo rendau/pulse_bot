@@ -87,15 +87,25 @@ func (s *Service) Run(ctx context.Context, req *agentModel.Req) (*agentModel.Res
 		if result.ToolCalls+len(resp.ToolCalls) > s.cfg.MaxToolCalls {
 			result.Incomplete = agentModel.IncompleteToolCalls
 			llmReq.NoTools = true
-			llmReq.ToolResults = lo.Map(resp.ToolCalls, func(c llmModel.ToolCall, _ int) llmModel.ToolResult {
-				return llmModel.ToolResult{CallId: c.Id, Output: localConstant.ToolSkipped}
+			traces := lo.Map(resp.ToolCalls, func(c llmModel.ToolCall, _ int) agentModel.ToolTrace {
+				return agentModel.ToolTrace{
+					Step:      result.Steps,
+					Name:      c.Name,
+					Arguments: c.Arguments,
+					Status:    agentModel.ToolStatusSkipped,
+					Output:    localConstant.ToolSkipped,
+				}
 			})
+			llmReq.ToolResults = toolResults(resp.ToolCalls, traces)
+			result.Trace = append(result.Trace, traces...)
 			continue
 		}
 
 		toolCtx, toolCancel := context.WithDeadline(ctx, loopDeadline)
-		llmReq.ToolResults = s.callTools(toolCtx, resp.ToolCalls)
+		traces := s.callTools(toolCtx, result.Steps, resp.ToolCalls)
 		toolCancel()
+		llmReq.ToolResults = toolResults(resp.ToolCalls, traces)
+		result.Trace = append(result.Trace, traces...)
 		result.ToolCalls += len(resp.ToolCalls)
 	}
 }
@@ -121,43 +131,51 @@ func (s *Service) complete(ctx context.Context, req *llmModel.Request) (*llmMode
 	return resp, nil
 }
 
-// callTools выполняет вызовы шага параллельно; ошибка вызова не роняет разбор,
-// а уходит модели текстом.
-func (s *Service) callTools(ctx context.Context, calls []llmModel.ToolCall) []llmModel.ToolResult {
-	results := make([]llmModel.ToolResult, len(calls))
+// callTools выполняет вызовы шага step параллельно; ошибка вызова не роняет
+// разбор, а уходит модели текстом.
+func (s *Service) callTools(ctx context.Context, step int, calls []llmModel.ToolCall) []agentModel.ToolTrace {
+	traces := make([]agentModel.ToolTrace, len(calls))
 
 	var g errgroup.Group
 	for i, call := range calls {
 		g.Go(func() error {
-			results[i] = llmModel.ToolResult{CallId: call.Id, Output: s.callTool(ctx, call)}
+			traces[i] = s.callTool(ctx, step, call)
 			return nil
 		})
 	}
 	_ = g.Wait()
 
-	return results
+	return traces
 }
 
-func (s *Service) callTool(ctx context.Context, call llmModel.ToolCall) string {
+func (s *Service) callTool(ctx context.Context, step int, call llmModel.ToolCall) agentModel.ToolTrace {
 	started := s.now()
 
 	res, err := s.pulse.Call(ctx, call.Name, call.Arguments)
-	metricToolCallDuration.WithLabelValues(call.Name).Observe(s.now().Sub(started).Seconds())
+	trace := agentModel.ToolTrace{Step: step, Name: call.Name, Arguments: call.Arguments, Duration: s.now().Sub(started)}
+	metricToolCallDuration.WithLabelValues(call.Name).Observe(trace.Duration.Seconds())
 
 	switch {
 	case err != nil:
-		metricToolCalls.WithLabelValues(call.Name, statusError).Inc()
+		trace.Status, trace.Output = agentModel.ToolStatusError, localConstant.ToolErrorPrefix+err.Error()
 		slog.Warn("pulse tool call failed", "tool", call.Name, "error", err)
-		return localConstant.ToolErrorPrefix + err.Error()
 	case res.IsError:
-		metricToolCalls.WithLabelValues(call.Name, statusToolError).Inc()
+		trace.Status, trace.Output = agentModel.ToolStatusToolError, localConstant.ToolErrorPrefix+res.Text
 		slog.Debug("pulse tool error", "tool", call.Name, "arguments", call.Arguments, "text", res.Text)
-		return localConstant.ToolErrorPrefix + res.Text
 	default:
-		metricToolCalls.WithLabelValues(call.Name, statusOk).Inc()
+		trace.Status, trace.Output = agentModel.ToolStatusOk, res.Text
 		slog.Debug("pulse tool call", "tool", call.Name, "arguments", call.Arguments, "bytes", strconv.Itoa(len(res.Text)))
-		return res.Text
 	}
+	metricToolCalls.WithLabelValues(call.Name, trace.Status).Inc()
+
+	return trace
+}
+
+// toolResults — ответы модели на вызовы шага в их порядке.
+func toolResults(calls []llmModel.ToolCall, traces []agentModel.ToolTrace) []llmModel.ToolResult {
+	return lo.Map(calls, func(c llmModel.ToolCall, i int) llmModel.ToolResult {
+		return llmModel.ToolResult{CallId: c.Id, Output: traces[i].Output}
+	})
 }
 
 func buildMessages(req *agentModel.Req, now time.Time) []llmModel.Message {

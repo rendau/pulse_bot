@@ -6,11 +6,10 @@ import (
 	"github.com/mechta-market/pulse_bot/internal/infra/metrics"
 )
 
-// статусы вызовов (метрики)
+// статусы шагов модели (метрики); статусы вызовов инструментов — agentModel.ToolStatus*
 const (
-	statusOk        = "ok"
-	statusError     = "error"
-	statusToolError = "tool_error" // инструмент ответил ошибкой (неверный параметр и т.п.)
+	statusOk    = "ok"
+	statusError = "error"
 )
 
 var (

@@ -1,5 +1,10 @@
 package model
 
+import (
+	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
+	llmModel "github.com/mechta-market/pulse_bot/internal/service/llm/model"
+)
+
 // Question — вопрос пользователя в чате.
 type Question struct {
 	ChatId int64
@@ -12,4 +17,10 @@ type Question struct {
 type Answer struct {
 	Text       string
 	Incomplete string
+
+	// ход разбора (отладочная ручка; Telegram их не показывает)
+	Steps     int
+	ToolCalls int
+	Usage     llmModel.Usage
+	Trace     []agentModel.ToolTrace
 }
