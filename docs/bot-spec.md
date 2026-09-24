@@ -50,7 +50,7 @@ Telegram ⇄ pulse_bot ⇄ LLM-провайдер (агентный цикл с 
 
 ## pulse — что уже есть
 
-- MCP streamable HTTP: `https://pulse.zeon.mdev.kz/mcp` (снаружи), внутри кластера —
+- MCP streamable HTTP: снаружи — через ruto (ingress убран), внутри кластера —
   сервис `pulse` в namespace `default`, путь `/mcp`. Авторизация — `Authorization: Bearer
   <MCP_AUTH_TOKEN>` (токен у пользователя, в kusec pulse).
 - Все инструменты read-only. Ошибка источника не роняет ответ: частичный результат +
