@@ -211,7 +211,9 @@ domain service → repo
   `tool`, `arguments`, `status` ok/error/tool_error/skipped, `duration_ms`, `output_bytes`,
   `truncated`, `output`). Ошибки — `{"error": ...}`: 401 токен, 400 тело/пустой текст, 409 в беседе
   идёт разбор, 504 таймаут. Запрос синхронный, до `AGENT_TIMEOUT` (5 мин).
-- Токен у агента — в файле `~/.config/pulse_bot/debug_token` (подставлять через `$(cat …)`, не печатать).
+- Снаружи: `https://api.mdev.kz/pulse_bot/debug/ask` (боевой ruto, аутентификация ruto на маршруте
+  выключена — доступ только по токену бота). Токен у агента — в файле
+  `~/.config/pulse_bot/debug_token` (подставлять через `$(tr -d '\n' < …)`, не печатать).
 
 ### Метрики
 - Prometheus на `/metrics` (системный сервер) при `WITH_METRICS=true`, реестр `metrics.Registry`.
