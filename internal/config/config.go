@@ -43,6 +43,9 @@ var Conf = struct {
 	// история диалога (в памяти): последние N пар вопрос-ответ, сброс после тишины
 	HistoryMaxTurns int           `env:"HISTORY_MAX_TURNS" envDefault:"10"`
 	HistoryTtl      time.Duration `env:"HISTORY_TTL" envDefault:"1h"`
+
+	// графики к ответам: dark | light (Telegram не сообщает боту тему пользователя)
+	ChartTheme string `env:"CHART_THEME" envDefault:"dark"`
 }{}
 
 func init() {

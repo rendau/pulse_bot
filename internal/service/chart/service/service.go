@@ -29,10 +29,11 @@ import (
 )
 
 const (
-	// размер картинки: Telegram показывает фото шириной до ~1280 px
-	width  = 9 * vg.Inch
-	height = 5 * vg.Inch
+	// размер картинки: 1152×648 — чётко на телефоне и без лишнего веса
+	width  = 8 * vg.Inch
+	height = 4.5 * vg.Inch
 	dpi    = 144
+	margin = 12 * vg.Length(1)
 
 	// maxSeries — больше линий на одном графике не различить; остальные отбрасываются
 	// (сначала — с наименьшими значениями), в заголовке — сколько показано
@@ -43,27 +44,15 @@ const (
 	markersUpTo = 40
 )
 
-// palette — различимые цвета рядов (tableau10).
-var palette = []color.Color{
-	color.RGBA{R: 0x4e, G: 0x79, B: 0xa7, A: 0xff},
-	color.RGBA{R: 0xf2, G: 0x8e, B: 0x2b, A: 0xff},
-	color.RGBA{R: 0xe1, G: 0x57, B: 0x59, A: 0xff},
-	color.RGBA{R: 0x59, G: 0xa1, B: 0x4f, A: 0xff},
-	color.RGBA{R: 0x76, G: 0xb7, B: 0xb2, A: 0xff},
-	color.RGBA{R: 0xed, G: 0xc9, B: 0x48, A: 0xff},
-	color.RGBA{R: 0xb0, G: 0x7a, B: 0xa1, A: 0xff},
-	color.RGBA{R: 0x9c, G: 0x75, B: 0x5f, A: 0xff},
-}
-
-var gridColor = color.Gray{Y: 0xe0}
-
-// Config — где рисуется время на оси.
+// Config — пояс времени на оси и тема (ThemeDark по умолчанию, ThemeLight).
 type Config struct {
 	Location *time.Location
+	Theme    string
 }
 
 type Service struct {
-	loc *time.Location
+	loc   *time.Location
+	theme theme
 }
 
 func New(cfg Config) *Service {
@@ -71,7 +60,11 @@ func New(cfg Config) *Service {
 	if loc == nil {
 		loc, _ = time.LoadLocation("Asia/Almaty")
 	}
-	return &Service{loc: loc}
+	t, ok := themes[cfg.Theme]
+	if !ok {
+		t = themes[ThemeDark]
+	}
+	return &Service{loc: loc, theme: t}
 }
 
 // ErrInvalidSpec — описание графика нарисовать нельзя (нет точек, неизвестный тип);
@@ -104,6 +97,7 @@ func (s *Service) Render(spec *chartModel.Spec) ([]byte, error) {
 		styleText(&axis.Tick.Label, 11)
 		styleText(&axis.Label.TextStyle, 12)
 	}
+	s.theme.apply(p)
 
 	h := height
 	var err error
@@ -111,7 +105,7 @@ func (s *Service) Render(spec *chartModel.Spec) ([]byte, error) {
 	case chartModel.TypeLine, "":
 		err = s.line(p, series, factor, unit)
 	case chartModel.TypeBar:
-		h, err = bars(p, series, factor, unit)
+		h, err = s.bars(p, series, factor, unit)
 	default:
 		err = fmt.Errorf("%w: type %q; expected line or bar", ErrInvalidSpec, spec.Type)
 	}
@@ -119,8 +113,9 @@ func (s *Service) Render(spec *chartModel.Spec) ([]byte, error) {
 		return nil, err
 	}
 
-	canvas := vgimg.NewWith(vgimg.UseWH(width, h), vgimg.UseDPI(dpi), vgimg.UseBackgroundColor(color.White))
-	p.Draw(draw.New(canvas))
+	canvas := vgimg.NewWith(vgimg.UseWH(width, h), vgimg.UseDPI(dpi), vgimg.UseBackgroundColor(s.theme.background))
+	// поля по краям: иначе длинные подписи оси и легенда упираются в границу картинки
+	p.Draw(draw.Crop(draw.New(canvas), margin, -margin, margin/2, -margin/2))
 
 	var buf bytes.Buffer
 	if _, err = (vgimg.PngCanvas{Canvas: canvas}).WriteTo(&buf); err != nil {
@@ -146,7 +141,7 @@ func (s *Service) line(p *plot.Plot, series []chartModel.Series, factor float64,
 		}
 	}
 
-	p.Add(gridLines())
+	p.Add(s.gridLines(true, true))
 	p.Y.Label.Text = unit
 	p.X.Tick.Marker = timeTicker{loc: s.loc, format: timeFormat(to.Sub(from))}
 
@@ -157,7 +152,7 @@ func (s *Service) line(p *plot.Plot, series []chartModel.Series, factor float64,
 			xys[j] = plotter.XY{X: float64(pt.Time.UnixNano()) / 1e9, Y: pt.Value * factor}
 		}
 
-		style := palette[i%len(palette)]
+		style := s.theme.color(i)
 		if len(xys) <= markersUpTo {
 			l, sc, err := plotter.NewLinePoints(xys)
 			if err != nil {
@@ -179,7 +174,7 @@ func (s *Service) line(p *plot.Plot, series []chartModel.Series, factor float64,
 		addLegend(p, r.Name, l, len(series))
 	}
 
-	fromZero(&p.Y, len(series) > 1)
+	fitValues(&p.Y, len(series) > 1)
 	return nil
 }
 
@@ -187,7 +182,7 @@ func (s *Service) line(p *plot.Plot, series []chartModel.Series, factor float64,
 // группы столбцов по категории (первый ряд — верхний). Категории — в порядке первого
 // появления, сверху вниз; у столбцов — значения. Высота картинки — по числу категорий:
 // два столбца не растягиваются на весь экран.
-func bars(p *plot.Plot, series []chartModel.Series, factor float64, unit string) (vg.Length, error) {
+func (s *Service) bars(p *plot.Plot, series []chartModel.Series, factor float64, unit string) (vg.Length, error) {
 	labels := lo.Uniq(lo.FlatMap(series, func(r chartModel.Series, _ int) []string {
 		return lo.Map(r.Points, func(pt chartModel.Point, _ int) string { return pt.Label })
 	}))
@@ -205,10 +200,7 @@ func bars(p *plot.Plot, series []chartModel.Series, factor float64, unit string)
 		index[label] = len(labels) - 1 - i
 	}
 
-	grid := plotter.NewGrid()
-	grid.Horizontal.Color = color.Transparent
-	grid.Vertical.Color = gridColor
-	p.Add(grid)
+	p.Add(s.gridLines(true, false))
 	p.X.Label.Text = unit
 	if len(series) > 1 {
 		p.Legend.Left = false
@@ -232,7 +224,7 @@ func bars(p *plot.Plot, series []chartModel.Series, factor float64, unit string)
 			return 0, fmt.Errorf("bars %q: %w", r.Name, err)
 		}
 		b.Horizontal = true
-		b.Color = palette[i%len(palette)]
+		b.Color = s.theme.color(i)
 		b.LineStyle.Width = 0
 		b.Offset = rowHeight/2 - barWidth/2 - barWidth*vg.Length(i)
 		p.Add(b)
@@ -250,6 +242,7 @@ func bars(p *plot.Plot, series []chartModel.Series, factor float64, unit string)
 			}
 			for k := range l.TextStyle {
 				styleText(&l.TextStyle[k], 10)
+				l.TextStyle[k].Color = s.theme.text
 				l.TextStyle[k].YAlign = -0.5
 			}
 			l.Offset = vg.Point{X: vg.Points(4), Y: b.Offset}
@@ -270,7 +263,7 @@ func bars(p *plot.Plot, series []chartModel.Series, factor float64, unit string)
 }
 
 // barHeight — толщина одиночного столбца.
-const barHeight = 22 * vg.Length(1)
+const barHeight = 18 * vg.Length(1)
 
 // formatValue — подпись значения у столбца: без лишних знаков после запятой.
 func formatValue(v float64) string {
@@ -290,10 +283,11 @@ func styleText(style *text.Style, size float64) {
 	style.Font.Size = vg.Points(size)
 }
 
-func gridLines() *plotter.Grid {
+// gridLines — сетка: vertical — линии по оси X, horizontal — по оси Y.
+func (s *Service) gridLines(vertical, horizontal bool) *plotter.Grid {
 	grid := plotter.NewGrid()
-	grid.Horizontal.Color = gridColor
-	grid.Vertical.Color = gridColor
+	grid.Vertical.Color = lo.Ternary[color.Color](vertical, s.theme.grid, color.Transparent)
+	grid.Horizontal.Color = lo.Ternary[color.Color](horizontal, s.theme.grid, color.Transparent)
 	return grid
 }
 
@@ -304,10 +298,21 @@ func addLegend(p *plot.Plot, name string, thumb plot.Thumbnailer, series int) {
 	}
 }
 
-// fromZero — ось значений от нуля (если отрицательных нет), с запасом сверху под легенду.
-func fromZero(axis *plot.Axis, legend bool) {
-	if axis.Min > 0 {
-		axis.Min = 0
+// fitValues — ось значений линий. Ряды, которые опускаются ниже половины максимума (ошибки,
+// трафик), — от нуля: иначе картинка преувеличит разницу. Ряды далеко от нуля (память
+// 520–650 МБ) — по данным с полями: от нуля линия прижата к верху, а три четверти пусты.
+// Сверху — запас под легенду.
+func fitValues(axis *plot.Axis, legend bool) {
+	low, high := axis.Min, axis.Max
+	switch {
+	case low <= 0 || low < high/2:
+		axis.Min = math.Min(low, 0)
+	default:
+		pad := (high - low) * 0.15
+		if pad == 0 {
+			pad = high * 0.1
+		}
+		axis.Min, axis.Max = low-pad, high+pad
 	}
 	if legend {
 		axis.Max += (axis.Max - axis.Min) * 0.25

@@ -91,7 +91,7 @@ func (a *App) Init() {
 	)
 
 	// chart
-	chartService := serviceChartServiceP.New(serviceChartServiceP.Config{})
+	chartService := serviceChartServiceP.New(serviceChartServiceP.Config{Theme: config.Conf.ChartTheme})
 
 	// agent
 	agentService := serviceAgentServiceP.New(

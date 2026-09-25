@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gonum.org/v1/plot"
 
 	chartModel "github.com/mechta-market/pulse_bot/internal/service/chart/model"
 )
@@ -44,9 +45,48 @@ func TestRender_Line(t *testing.T) {
 	})
 	require.NoError(t, err)
 	w, h := decodePng(t, img)
-	assert.Equal(t, 1296, w)
-	assert.Equal(t, 720, h)
+	assert.Equal(t, 1152, w)
+	assert.Equal(t, 648, h)
 	save(t, "line.png", img)
+}
+
+// память далеко от нуля: ось — по данным, в обеих темах
+func TestRender_LineFarFromZero(t *testing.T) {
+	start := time.Date(2026, 9, 25, 3, 0, 0, 0, time.UTC)
+	points := make([]chartModel.Point, 0, 72)
+	for i := range 72 {
+		v := 520e6 + float64(i%12)*11e6
+		points = append(points, chartModel.Point{Time: start.Add(time.Duration(i) * 5 * time.Minute), Value: v})
+	}
+	spec := &chartModel.Spec{Type: chartModel.TypeLine, Title: "Память caravan за 6 часов", Unit: "bytes",
+		Series: []chartModel.Series{{Name: "caravan", Points: points}}}
+
+	for _, theme := range []string{ThemeDark, ThemeLight} {
+		img, err := New(Config{Theme: theme}).Render(spec)
+		require.NoError(t, err)
+		decodePng(t, img)
+		save(t, "memory_"+theme+".png", img)
+	}
+}
+
+func TestFitValues(t *testing.T) {
+	// далеко от нуля — по данным с полями
+	axis := plot.Axis{Min: 520, Max: 650}
+	fitValues(&axis, false)
+	assert.InDelta(t, 520-19.5, axis.Min, 1e-9)
+	assert.InDelta(t, 650+19.5, axis.Max, 1e-9)
+
+	// опускается ниже половины максимума — от нуля
+	axis = plot.Axis{Min: 12, Max: 830}
+	fitValues(&axis, false)
+	assert.Zero(t, axis.Min)
+	assert.InDelta(t, 830, axis.Max, 1e-9)
+
+	// ровная линия — поля от значения
+	axis = plot.Axis{Min: 500, Max: 500}
+	fitValues(&axis, false)
+	assert.InDelta(t, 450, axis.Min, 1e-9)
+	assert.InDelta(t, 550, axis.Max, 1e-9)
 }
 
 func TestRender_Bar(t *testing.T) {
