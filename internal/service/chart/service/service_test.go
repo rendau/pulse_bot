@@ -96,8 +96,8 @@ func TestScale(t *testing.T) {
 		factor float64
 		label  string
 	}{
-		{"bytes", 522985472, 1.0 / (1 << 20), "МБ"},
-		{"bytes", 3 << 30, 1.0 / (1 << 30), "ГБ"},
+		{"bytes", 522985472, 1e-6, "МБ"},
+		{"bytes", 3e9, 1e-9, "ГБ"},
 		{"bytes", 500, 1, "байт"},
 		{"ratio", 0.4, 100, "%"},
 		{"seconds", 0.12, 1000, "мс"},

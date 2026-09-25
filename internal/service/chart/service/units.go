@@ -2,7 +2,8 @@ package service
 
 import "strings"
 
-// scale — во что перевести значения ряда, чтобы их было удобно читать: байты — в МБ/ГБ,
+// scale — во что перевести значения ряда, чтобы их было удобно читать: байты — в МБ/ГБ
+// (десятичные, как их считает модель в тексте ответа: график и текст не расходятся),
 // доли — в проценты, секунды меньше секунды — в мс, трафик меньше запроса в секунду —
 // в запросы в минуту. max — наибольшее значение по модулю.
 func scale(unit string, max float64) (factor float64, label string) {
@@ -10,10 +11,10 @@ func scale(unit string, max float64) (factor float64, label string) {
 	case "bytes", "byte", "b":
 		factor, label = 1, "байт"
 		for _, u := range []string{"КБ", "МБ", "ГБ", "ТБ"} {
-			if max/factor < 1024 {
+			if max/factor < 1000 {
 				break
 			}
-			factor, label = factor*1024, u
+			factor, label = factor*1000, u
 		}
 		return 1 / factor, label
 	case "ratio":
