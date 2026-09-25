@@ -13,6 +13,8 @@ type ChatUsecaseI interface {
 	Allowed(userId int64) bool
 	Ask(ctx context.Context, q *chatModel.Question) (*chatModel.Answer, error)
 	Reset(ctx context.Context, chatId, userId int64) error
+	Admin(userId int64) bool
+	Eval(ctx context.Context, userId int64, only []string) (string, error)
 }
 
 // SenderI — методы Bot API, которыми отвечает бот (реализует *bot.Bot).

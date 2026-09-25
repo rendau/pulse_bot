@@ -16,16 +16,9 @@ import (
 
 	"github.com/mechta-market/pulse_bot/internal/config"
 	"github.com/mechta-market/pulse_bot/internal/constant"
-	domainDialogRepoMemP "github.com/mechta-market/pulse_bot/internal/domain/dialog/repo/mem"
-	domainDialogServiceP "github.com/mechta-market/pulse_bot/internal/domain/dialog/service"
-	handlerDebugP "github.com/mechta-market/pulse_bot/internal/handler/debug"
 	handlerTelegramP "github.com/mechta-market/pulse_bot/internal/handler/telegram"
 	"github.com/mechta-market/pulse_bot/internal/infra/httpx"
 	serviceAgentServiceP "github.com/mechta-market/pulse_bot/internal/service/agent/service"
-	serviceChartServiceP "github.com/mechta-market/pulse_bot/internal/service/chart/service"
-	"github.com/mechta-market/pulse_bot/internal/service/llm"
-	serviceLlmOpenaiServiceP "github.com/mechta-market/pulse_bot/internal/service/llm/openai/service"
-	servicePulseServiceP "github.com/mechta-market/pulse_bot/internal/service/pulse/service"
 	usecaseChatP "github.com/mechta-market/pulse_bot/internal/usecase/chat"
 )
 
@@ -37,13 +30,10 @@ const (
 )
 
 type App struct {
-	pulse *servicePulseServiceP.Service
-
 	telegramBot     *bot.Bot
 	telegramHandler *handlerTelegramP.Handler
 	telegramWg      sync.WaitGroup
 
-	debugHttpServer  *http.Server // nil — DEBUG_CHAT_TOKEN не задан
 	systemHttpServer *http.Server
 
 	ctx       context.Context
@@ -61,59 +51,22 @@ func (a *App) Init() {
 	initLogger(config.Conf.Debug, config.Conf.LogLevel)
 	slog.Info("starting " + constant.ServiceName + " " + constant.Version)
 
-	// llm
-	var llmProvider llm.Provider
-	switch config.Conf.LlmProvider {
-	case constant.LlmProviderOpenai:
-		llmProvider = serviceLlmOpenaiServiceP.New(
-			serviceLlmOpenaiServiceP.Config{
-				ApiKey:          config.Conf.OpenaiApiKey,
-				BaseUrl:         config.Conf.OpenaiBaseUrl,
-				Model:           config.Conf.LlmModel,
-				ReasoningEffort: config.Conf.LlmReasoningEffort,
-				MaxOutputTokens: config.Conf.LlmMaxOutputTokens,
-			},
-			// ответ без стриминга приходит целиком после генерации (с reasoning —
-			// минуты): заголовков ждём до общего таймаута разбора, его держит контекст
-			httpx.New(httpx.Config{ResponseHeaderTimeout: config.Conf.AgentTimeout, VerifyTLS: true}),
-		)
-	default:
-		errCheck(fmt.Errorf("unknown LLM_PROVIDER %q", config.Conf.LlmProvider), "llm")
-	}
-	slog.Info("llm", "provider", llmProvider.Name(), "model", config.Conf.LlmModel, "reasoning_effort", config.Conf.LlmReasoningEffort)
-
-	// pulse (MCP)
-	a.pulse = servicePulseServiceP.New(
-		config.Conf.PulseMcpUrl,
-		config.Conf.PulseMcpToken,
-		// таймаут вызова инструмента держит контекст разбора
-		httpx.New(httpx.Config{ResponseHeaderTimeout: 2 * time.Minute}),
-	)
-
-	// chart
-	chartService := serviceChartServiceP.New(serviceChartServiceP.Config{Theme: config.Conf.ChartTheme})
-
-	// agent
+	// agent (pulse_agent API)
 	agentService := serviceAgentServiceP.New(
-		serviceAgentServiceP.Config{
-			MaxToolCalls: config.Conf.AgentMaxToolCalls,
-			Timeout:      config.Conf.AgentTimeout,
-		},
-		llmProvider, a.pulse, chartService,
-	)
-
-	// dialog
-	dialogRepo := domainDialogRepoMemP.New()
-	dialogService := domainDialogServiceP.New(
-		domainDialogServiceP.Config{MaxTurns: config.Conf.HistoryMaxTurns, Ttl: config.Conf.HistoryTtl},
-		dialogRepo,
+		config.Conf.AgentUrl,
+		config.Conf.AgentKey,
+		// ответ приходит целиком после разбора, прогон эталонов — после всех вопросов: заголовков
+		// ждём до большего из таймаутов, конкретный вызов ограничивает контекст
+		httpx.New(httpx.Config{ResponseHeaderTimeout: max(config.Conf.AgentTimeout, config.Conf.AgentEvalTimeout)}),
 	)
 
 	// chat
-	chatUsecase := usecaseChatP.New(
-		usecaseChatP.Config{AllowedUsers: config.Conf.TelegramAllowedUsers},
-		dialogService, agentService,
-	)
+	chatUsecase := usecaseChatP.New(usecaseChatP.Config{
+		AllowedUsers: config.Conf.TelegramAllowedUsers,
+		AdminUsers:   config.Conf.TelegramAdminUsers,
+		AskTimeout:   config.Conf.AgentTimeout,
+		EvalTimeout:  config.Conf.AgentEvalTimeout,
+	}, agentService)
 	if len(config.Conf.TelegramAllowedUsers) == 0 {
 		slog.Warn("TELEGRAM_ALLOWED_USERS is empty: bot will deny everyone")
 	}
@@ -140,19 +93,6 @@ func (a *App) Init() {
 		errCheck(err, "telegram bot init")
 	}
 
-	// debug http server (/debug/ask): свой usecase чата — без белого списка
-	// (доступ по токену) и со своей историей, не пересекается с Telegram
-	if config.Conf.DebugChatToken != "" {
-		debugDialogService := domainDialogServiceP.New(
-			domainDialogServiceP.Config{MaxTurns: config.Conf.HistoryMaxTurns, Ttl: config.Conf.HistoryTtl},
-			domainDialogRepoMemP.New(),
-		)
-		debugChatUsecase := usecaseChatP.New(usecaseChatP.Config{AllowAll: true}, debugDialogService, agentService)
-		debugHandler := handlerDebugP.New(debugChatUsecase, config.Conf.DebugChatToken)
-
-		a.debugHttpServer = DebugHttpServerCreate(config.Conf.HttpPort, debugHandler, a.ctx)
-	}
-
 	// system http server (healthcheck, docs, metrics)
 	{
 		a.systemHttpServer = SystemHttpServerCreate(config.Conf.SystemHttpPort)
@@ -172,17 +112,6 @@ func (a *App) Start() {
 			a.telegramBot.Start(a.ctx)
 		})
 		slog.Info("telegram bot started")
-	}
-
-	// debug http server
-	if a.debugHttpServer != nil {
-		go func() {
-			err := a.debugHttpServer.ListenAndServe()
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				errCheck(err, "debug-http-server stopped")
-			}
-		}()
-		slog.Info("debug-http-server started " + a.debugHttpServer.Addr)
 	}
 
 	// system http server
@@ -211,17 +140,6 @@ func (a *App) Stop() {
 	// stop context: останавливает long polling и отменяет идущие разборы
 	a.ctxCancel()
 
-	// debug http server
-	if a.debugHttpServer != nil {
-		ctx, ctxCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer ctxCancel()
-
-		if err := a.debugHttpServer.Shutdown(ctx); err != nil {
-			slog.Error("debug-http-server shutdown error", "error", err)
-			a.exitCode = 1
-		}
-	}
-
 	// system http server
 	{
 		ctx, ctxCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -244,10 +162,6 @@ func (a *App) WaitJobs() {
 
 func (a *App) Exit() {
 	slog.Info("Exit")
-
-	if err := a.pulse.Close(); err != nil {
-		slog.Warn("pulse session close", "error", err)
-	}
 
 	os.Exit(a.exitCode)
 }

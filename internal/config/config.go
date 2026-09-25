@@ -14,38 +14,19 @@ var Conf = struct {
 
 	SystemHttpPort string `env:"SYSTEM_HTTP_PORT" envDefault:"3003"` // healthcheck, metrics, docs
 
-	// отладочная ручка POST /debug/ask (вопрос в обход Telegram, с ходом разбора):
-	// свой порт, bearer-токен; пустой токен — сервер не поднимается
-	HttpPort       string `env:"HTTP_PORT" envDefault:"80"`
-	DebugChatToken string `env:"DEBUG_CHAT_TOKEN"`
-
 	// telegram: long polling; отвечаем только пользователям из белого списка (user ID через запятую)
 	TelegramBotToken     string  `env:"TELEGRAM_BOT_TOKEN,required"`
 	TelegramAllowedUsers []int64 `env:"TELEGRAM_ALLOWED_USERS" envSeparator:","`
+	// админы: команда /eval (прогон эталонных вопросов агента)
+	TelegramAdminUsers []int64 `env:"TELEGRAM_ADMIN_USERS" envSeparator:","`
 
-	// LLM: провайдер выбирает адаптер (internal/service/llm/<provider>)
-	LlmProvider        string `env:"LLM_PROVIDER" envDefault:"openai"`
-	LlmModel           string `env:"LLM_MODEL" envDefault:"gpt-6-sol"`
-	LlmReasoningEffort string `env:"LLM_REASONING_EFFORT" envDefault:"medium"`
-	LlmMaxOutputTokens int64  `env:"LLM_MAX_OUTPUT_TOKENS" envDefault:"32000"` // на один шаг, вместе с reasoning
-
-	OpenaiApiKey  string `env:"OPENAI_API_KEY"`
-	OpenaiBaseUrl string `env:"OPENAI_BASE_URL"` // пусто — api.openai.com
-
-	// pulse (MCP streamable HTTP); токен — bearer
-	PulseMcpUrl   string `env:"PULSE_MCP_URL,required"`
-	PulseMcpToken string `env:"PULSE_MCP_TOKEN"`
-
-	// ограничители разбора
-	AgentMaxToolCalls int           `env:"AGENT_MAX_TOOL_CALLS" envDefault:"20"`
-	AgentTimeout      time.Duration `env:"AGENT_TIMEOUT" envDefault:"5m"`
-
-	// история диалога (в памяти): последние N пар вопрос-ответ, сброс после тишины
-	HistoryMaxTurns int           `env:"HISTORY_MAX_TURNS" envDefault:"10"`
-	HistoryTtl      time.Duration `env:"HISTORY_TTL" envDefault:"1h"`
-
-	// графики к ответам: dark | light (Telegram не сообщает боту тему пользователя)
-	ChartTheme string `env:"CHART_THEME" envDefault:"dark"`
+	// pulse_agent: разбор вопроса, история бесед и графики — там; ключ — бота в API_KEYS агента
+	AgentUrl string `env:"AGENT_URL,required"`
+	AgentKey string `env:"AGENT_KEY"`
+	// AgentTimeout — сколько ждать ответ агента (его разбор — до 5 мин, ответ приходит целиком)
+	AgentTimeout time.Duration `env:"AGENT_TIMEOUT" envDefault:"6m"`
+	// AgentEvalTimeout — сколько ждать прогон эталонов (/eval)
+	AgentEvalTimeout time.Duration `env:"AGENT_EVAL_TIMEOUT" envDefault:"21m"`
 }{}
 
 func init() {

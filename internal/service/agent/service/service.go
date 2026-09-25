@@ -1,245 +1,170 @@
+// Package service — HTTP-клиент API pulse_agent. Бот — одна из систем-клиентов: свой ключ,
+// формат telegram (Markdown для Telegram), графики только картинкой.
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
-	"log/slog"
-	"strconv"
+	"io"
+	"net/http"
 	"strings"
-	"time"
 
 	"github.com/samber/lo"
-	"golang.org/x/sync/errgroup"
 
+	"github.com/mechta-market/pulse_bot/internal/errs"
 	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
-	localConstant "github.com/mechta-market/pulse_bot/internal/service/agent/service/constant"
-	llmModel "github.com/mechta-market/pulse_bot/internal/service/llm/model"
-	pulseModel "github.com/mechta-market/pulse_bot/internal/service/pulse/model"
 )
 
-// finalReserve — время, которое остаётся на финальный ответ модели: после
-// loopDeadline инструменты больше не вызываются.
-const finalReserve = time.Minute
+const (
+	askPath   = "/v1/ask"
+	resetPath = "/v1/reset"
+	evalPath  = "/v1/eval"
 
-// Config — ограничители разбора.
-type Config struct {
-	MaxToolCalls int
-	Timeout      time.Duration
-}
+	maxBodyBytes = 16 << 20 // ответ с тремя графиками в base64 — сотни КБ
+)
 
 type Service struct {
-	cfg   Config
-	llm   llmI
-	pulse pulseI
-	chart chartI // nil — без графиков
-	now   func() time.Time
+	baseUrl    string
+	key        string
+	httpClient *http.Client
 }
 
-func New(cfg Config, llm llmI, pulse pulseI, chart chartI) *Service {
-	return &Service{cfg: cfg, llm: llm, pulse: pulse, chart: chart, now: time.Now}
+// New — baseUrl — адрес агента (http://pulse-agent.default), key — ключ бота в API_KEYS агента;
+// httpClient — из internal/infra/httpx (ответ приходит целиком после разбора: до минут).
+func New(baseUrl, key string, httpClient *http.Client) *Service {
+	return &Service{baseUrl: strings.TrimRight(baseUrl, "/"), key: key, httpClient: httpClient}
 }
 
-func (s *Service) Run(ctx context.Context, req *agentModel.Req) (*agentModel.Result, error) {
-	started := s.now()
-
-	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
-	defer cancel()
-
-	loopDeadline := started.Add(s.cfg.Timeout - min(finalReserve, s.cfg.Timeout/4))
-
-	catalog, err := s.pulse.Catalog(ctx)
+func (s *Service) Ask(ctx context.Context, req *agentModel.AskReq) (*agentModel.Answer, error) {
+	rep := &askRep{}
+	err := s.sendRequest(ctx, askPath, &askReq{
+		Question:       req.Question,
+		ConversationId: req.ConversationId,
+		User:           userReq{Id: req.UserId, Name: req.UserName},
+		Format:         "telegram",
+		Charts:         "png",
+	}, rep)
 	if err != nil {
-		return nil, fmt.Errorf("pulse.Catalog: %w", err)
+		return nil, err
 	}
 
-	llmReq := &llmModel.Request{
-		System:   localConstant.SystemPrompt(catalog.Instructions),
-		Messages: buildMessages(req, started),
-		Tools:    lo.Map(catalog.Tools, encodeTool),
-	}
-	if s.chart != nil {
-		llmReq.Tools = append(llmReq.Tools, llmModel.ToolDef{
-			Name: localConstant.ChartTool, Description: localConstant.ChartDescription, Parameters: localConstant.ChartSchema,
-		})
-	}
-
-	result := &agentModel.Result{}
-	defer func() { metricRunSteps.Observe(float64(result.Steps)) }()
-
-	for {
-		if !llmReq.NoTools && s.now().After(loopDeadline) {
-			result.Incomplete = agentModel.IncompleteTimeout
-			llmReq.NoTools = true
-		}
-
-		resp, err := s.complete(ctx, llmReq)
+	answer := &agentModel.Answer{Text: rep.Answer, Incomplete: rep.Incomplete}
+	for _, c := range rep.Charts {
+		png, err := base64.StdEncoding.DecodeString(c.Png)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("decode chart %q: %w", c.Title, err)
 		}
-		result.Steps++
-		result.Usage.Add(resp.Usage)
-
-		if len(resp.ToolCalls) == 0 || llmReq.NoTools {
-			result.Answer = strings.TrimSpace(resp.Text)
-			if resp.Incomplete != "" && result.Incomplete == "" {
-				result.Incomplete = agentModel.IncompleteOutput
-			}
-			return result, nil
-		}
-
-		llmReq.State = resp.State
-
-		// лимит вызовов: на запрошенные вызовы отвечаем отказом и просим закончить
-		if result.ToolCalls+len(resp.ToolCalls) > s.cfg.MaxToolCalls {
-			result.Incomplete = agentModel.IncompleteToolCalls
-			llmReq.NoTools = true
-			traces := lo.Map(resp.ToolCalls, func(c llmModel.ToolCall, _ int) agentModel.ToolTrace {
-				return agentModel.ToolTrace{
-					Step:      result.Steps,
-					Name:      c.Name,
-					Arguments: c.Arguments,
-					Status:    agentModel.ToolStatusSkipped,
-					Output:    localConstant.ToolSkipped,
-				}
-			})
-			llmReq.ToolResults = toolResults(resp.ToolCalls, traces)
-			result.Trace = append(result.Trace, traces...)
-			continue
-		}
-
-		toolCtx, toolCancel := context.WithDeadline(ctx, loopDeadline)
-		traces := s.callTools(toolCtx, result.Steps, resp.ToolCalls, result.Trace)
-		toolCancel()
-		result.Charts = collectCharts(result.Charts, traces)
-		llmReq.ToolResults = toolResults(resp.ToolCalls, traces)
-		result.Trace = append(result.Trace, traces...)
-		result.ToolCalls += len(resp.ToolCalls)
+		answer.Charts = append(answer.Charts, agentModel.Chart{Title: c.Title, Png: png})
 	}
+	return answer, nil
 }
 
-// complete — шаг модели с метриками.
-func (s *Service) complete(ctx context.Context, req *llmModel.Request) (*llmModel.Response, error) {
-	provider := s.llm.Name()
-	started := s.now()
+// Eval — прогон эталонных вопросов у агента: минуты, ответ — таблица.
+func (s *Service) Eval(ctx context.Context, only []string) (string, error) {
+	rep := &evalRep{}
+	if err := s.sendRequest(ctx, evalPath, &evalReq{Only: only}, rep); err != nil {
+		return "", err
+	}
+	return rep.Text, nil
+}
 
-	resp, err := s.llm.Complete(ctx, req)
-	metricLlmRequestDuration.WithLabelValues(provider).Observe(s.now().Sub(started).Seconds())
+func (s *Service) Reset(ctx context.Context, conversationId string) error {
+	return s.sendRequest(ctx, resetPath, &resetReq{ConversationId: conversationId}, &resetRep{})
+}
+
+// sendRequest — единственная точка отправки: JSON, ключ, коды ошибок API → errs.
+func (s *Service) sendRequest(ctx context.Context, path string, reqObj, repObj any) error {
+	body, err := json.Marshal(reqObj)
 	if err != nil {
-		metricLlmRequests.WithLabelValues(provider, statusError).Inc()
-		return nil, fmt.Errorf("llm.Complete: %w", err)
+		return fmt.Errorf("encode %s: %w", path, err)
 	}
-	metricLlmRequests.WithLabelValues(provider, statusOk).Inc()
 
-	metricLlmTokens.WithLabelValues(provider, "input").Add(float64(resp.Usage.InputTokens))
-	metricLlmTokens.WithLabelValues(provider, "cached").Add(float64(resp.Usage.CachedTokens))
-	metricLlmTokens.WithLabelValues(provider, "output").Add(float64(resp.Usage.OutputTokens))
-	metricLlmTokens.WithLabelValues(provider, "reasoning").Add(float64(resp.Usage.ReasoningTokens))
-
-	return resp, nil
-}
-
-// callTools выполняет вызовы шага step параллельно; ошибка вызова не роняет
-// разбор, а уходит модели текстом. prior — вызовы прошлых шагов (данные для графиков).
-func (s *Service) callTools(ctx context.Context, step int, calls []llmModel.ToolCall, prior []agentModel.ToolTrace) []agentModel.ToolTrace {
-	traces := make([]agentModel.ToolTrace, len(calls))
-
-	var g errgroup.Group
-	for i, call := range calls {
-		g.Go(func() error {
-			if call.Name == localConstant.ChartTool && s.chart != nil {
-				traces[i] = s.callChart(step, call, prior)
-			} else {
-				traces[i] = s.callTool(ctx, step, call)
-			}
-			return nil
-		})
-	}
-	_ = g.Wait()
-
-	return traces
-}
-
-// callChart — render_chart: график рисует сам бот, pulse не нужен.
-func (s *Service) callChart(step int, call llmModel.ToolCall, prior []agentModel.ToolTrace) agentModel.ToolTrace {
-	started := s.now()
-
-	chart, output, err := s.renderChart(call.Arguments, prior)
-	trace := agentModel.ToolTrace{Step: step, Name: call.Name, Arguments: call.Arguments, Duration: s.now().Sub(started)}
-	metricToolCallDuration.WithLabelValues(call.Name).Observe(trace.Duration.Seconds())
-
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseUrl+path, bytes.NewReader(body))
 	if err != nil {
-		trace.Status, trace.Output = agentModel.ToolStatusToolError, localConstant.ToolErrorPrefix+err.Error()
-		slog.Debug("chart error", "arguments", call.Arguments, "error", err)
-	} else {
-		trace.Status, trace.Output, trace.Chart = agentModel.ToolStatusOk, output, chart
+		return fmt.Errorf("new request: %w", err)
 	}
-	metricToolCalls.WithLabelValues(call.Name, trace.Status).Inc()
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+s.key)
 
-	return trace
-}
-
-// collectCharts добавляет графики шага к построенным; сверх MaxCharts — отказ модели
-// вместо «построен».
-func collectCharts(charts []agentModel.Chart, traces []agentModel.ToolTrace) []agentModel.Chart {
-	for i := range traces {
-		if traces[i].Chart == nil {
-			continue
-		}
-		if len(charts) >= localConstant.MaxCharts {
-			traces[i].Chart = nil
-			traces[i].Status = agentModel.ToolStatusToolError
-			traces[i].Output = localConstant.ToolErrorPrefix + fmt.Sprintf(localConstant.ChartLimit, localConstant.MaxCharts)
-			continue
-		}
-		charts = append(charts, *traces[i].Chart)
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: agent %s: %w", errs.ServiceNA, path, err)
 	}
-	return charts
-}
+	defer func() { _ = resp.Body.Close() }()
 
-func (s *Service) callTool(ctx context.Context, step int, call llmModel.ToolCall) agentModel.ToolTrace {
-	started := s.now()
-
-	res, err := s.pulse.Call(ctx, call.Name, call.Arguments)
-	trace := agentModel.ToolTrace{Step: step, Name: call.Name, Arguments: call.Arguments, Duration: s.now().Sub(started)}
-	metricToolCallDuration.WithLabelValues(call.Name).Observe(trace.Duration.Seconds())
-
-	switch {
-	case err != nil:
-		trace.Status, trace.Output = agentModel.ToolStatusError, localConstant.ToolErrorPrefix+err.Error()
-		slog.Warn("pulse tool call failed", "tool", call.Name, "error", err)
-	case res.IsError:
-		trace.Status, trace.Output = agentModel.ToolStatusToolError, localConstant.ToolErrorPrefix+res.Text
-		slog.Debug("pulse tool error", "tool", call.Name, "arguments", call.Arguments, "text", res.Text)
-	default:
-		trace.Status, trace.Output = agentModel.ToolStatusOk, res.Text
-		slog.Debug("pulse tool call", "tool", call.Name, "arguments", call.Arguments, "bytes", strconv.Itoa(len(res.Text)))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
 	}
-	metricToolCalls.WithLabelValues(call.Name, trace.Status).Inc()
 
-	return trace
-}
-
-// toolResults — ответы модели на вызовы шага в их порядке.
-func toolResults(calls []llmModel.ToolCall, traces []agentModel.ToolTrace) []llmModel.ToolResult {
-	return lo.Map(calls, func(c llmModel.ToolCall, i int) llmModel.ToolResult {
-		return llmModel.ToolResult{CallId: c.Id, Output: traces[i].Output}
-	})
-}
-
-func buildMessages(req *agentModel.Req, now time.Time) []llmModel.Message {
-	messages := lo.FlatMap(req.History, func(t agentModel.Turn, _ int) []llmModel.Message {
-		return []llmModel.Message{
-			{Role: llmModel.RoleUser, Text: t.Question},
-			{Role: llmModel.RoleAssistant, Text: t.Answer},
+	if resp.StatusCode != http.StatusOK {
+		var e errorRep
+		_ = json.Unmarshal(raw, &e)
+		msg := lo.CoalesceOrEmpty(e.Error, strings.TrimSpace(string(raw)))
+		switch e.Code {
+		case "busy":
+			return fmt.Errorf("%w: %s", errs.Busy, msg)
+		case "forbidden":
+			return fmt.Errorf("%w: %s", errs.NotAuthorized, msg)
+		case "invalid_request":
+			return fmt.Errorf("%w: %s", errs.InvalidRequest, msg)
+		case "timeout":
+			return fmt.Errorf("%w: agent: %s", context.DeadlineExceeded, msg)
+		default:
+			return fmt.Errorf("%w: agent %s: status %d: %s", errs.ServiceNA, path, resp.StatusCode, msg)
 		}
-	})
+	}
 
-	return append(messages, llmModel.Message{
-		Role: llmModel.RoleUser,
-		Text: fmt.Sprintf(localConstant.QuestionTemplate, now.UTC().Format(time.RFC3339), req.Question),
-	})
+	if err = json.Unmarshal(raw, repObj); err != nil {
+		return fmt.Errorf("decode %s: %w", path, err)
+	}
+	return nil
 }
 
-func encodeTool(t pulseModel.Tool, _ int) llmModel.ToolDef {
-	return llmModel.ToolDef{Name: t.Name, Description: t.Description, Parameters: t.InputSchema}
+// transport models — подмножество контракта docs/agent-api.md, которое нужно боту
+
+type askReq struct {
+	Question       string  `json:"question"`
+	ConversationId string  `json:"conversation_id,omitempty"`
+	User           userReq `json:"user"`
+	Format         string  `json:"format"`
+	Charts         string  `json:"charts"`
+}
+
+type userReq struct {
+	Id   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+}
+
+type askRep struct {
+	Answer     string `json:"answer"`
+	Incomplete string `json:"incomplete"`
+	Charts     []struct {
+		Title string `json:"title"`
+		Png   string `json:"png"`
+	} `json:"charts"`
+}
+
+type evalReq struct {
+	Only []string `json:"only,omitempty"`
+}
+
+type evalRep struct {
+	Text string `json:"text"`
+}
+
+type resetReq struct {
+	ConversationId string `json:"conversation_id"`
+}
+
+type resetRep struct {
+	Reset bool `json:"reset"`
+}
+
+type errorRep struct {
+	Code  string `json:"code"`
+	Error string `json:"error"`
 }
