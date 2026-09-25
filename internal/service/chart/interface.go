@@ -1,9 +1,0 @@
-package chart
-
-import chartModel "github.com/mechta-market/pulse_bot/internal/service/chart/model"
-
-// Chart — графики к ответам: описание графика → PNG для Telegram. Про источник данных
-// (pulse, модель) не знает.
-type Chart interface {
-	Render(spec *chartModel.Spec) ([]byte, error)
-}

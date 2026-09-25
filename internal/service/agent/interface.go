@@ -6,8 +6,9 @@ import (
 	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
 )
 
-// Agent — агентный цикл: вопрос → шаги модели с инструментами pulse → ответ.
-// Не знает ни про Telegram, ни про конкретного LLM-провайдера.
+// Agent — клиент API pulse_agent (github.com/mechta-market/pulse_agent, docs/agent-api.md):
+// разбор вопроса, история бесед и графики — там; бот только передаёт вопрос и ответ.
 type Agent interface {
-	Run(ctx context.Context, req *agentModel.Req) (*agentModel.Result, error)
+	Ask(ctx context.Context, req *agentModel.AskReq) (*agentModel.Answer, error)
+	Reset(ctx context.Context, conversationId string) error
 }

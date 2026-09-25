@@ -103,7 +103,9 @@ func (h *Handler) process(ctx context.Context, sender SenderI, msg *models.Messa
 		return
 	}
 
-	answer, err := h.askWithTyping(ctx, sender, &chatModel.Question{ChatId: chatId, UserId: userId, Text: text})
+	answer, err := h.askWithTyping(ctx, sender, &chatModel.Question{
+		ChatId: chatId, UserId: userId, UserName: strings.TrimSpace(msg.From.FirstName + " " + msg.From.LastName), Text: text,
+	})
 	if err != nil {
 		h.replyError(ctx, sender, msg, err)
 		return

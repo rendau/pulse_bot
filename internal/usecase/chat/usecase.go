@@ -2,8 +2,10 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -12,7 +14,6 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/mechta-market/pulse_bot/internal/constant"
-	dialogModel "github.com/mechta-market/pulse_bot/internal/domain/dialog/model"
 	"github.com/mechta-market/pulse_bot/internal/errs"
 	"github.com/mechta-market/pulse_bot/internal/infra/metrics"
 	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
@@ -40,43 +41,33 @@ func init() {
 // Config — доступ к боту.
 type Config struct {
 	AllowedUsers []int64
-
-	// AllowAll — без белого списка: отладочная ручка, доступ к ней проверяет
-	// транспорт (bearer-токен).
-	AllowAll bool
 }
 
 type Usecase struct {
-	allowAll bool
-	allowed  map[int64]struct{}
-	dialog   DialogServiceI
-	agent    AgentI
+	allowed map[int64]struct{}
+	agent   AgentI
 
 	mu   sync.Mutex
 	busy map[int64]struct{} // чаты, где идёт разбор
 }
 
-func New(cfg Config, dialog DialogServiceI, agent AgentI) *Usecase {
+func New(cfg Config, agent AgentI) *Usecase {
 	return &Usecase{
-		allowAll: cfg.AllowAll,
-		allowed:  lo.SliceToMap(cfg.AllowedUsers, func(id int64) (int64, struct{}) { return id, struct{}{} }),
-		dialog:   dialog,
-		agent:    agent,
-		busy:     map[int64]struct{}{},
+		allowed: lo.SliceToMap(cfg.AllowedUsers, func(id int64) (int64, struct{}) { return id, struct{}{} }),
+		agent:   agent,
+		busy:    map[int64]struct{}{},
 	}
 }
 
 // Allowed — есть ли пользователь в белом списке.
 func (u *Usecase) Allowed(userId int64) bool {
-	if u.allowAll {
-		return true
-	}
 	_, ok := u.allowed[userId]
 	return ok
 }
 
-// Ask разбирает вопрос. Ошибки: errs.NotAuthorized — пользователя нет в белом
-// списке; errs.Busy — в чате уже идёт разбор; errs.InvalidRequest — пустой вопрос.
+// Ask разбирает вопрос (разбор и история беседы — в pulse_agent). Ошибки:
+// errs.NotAuthorized — пользователя нет в белом списке; errs.Busy — в чате уже идёт
+// разбор; errs.InvalidRequest — пустой вопрос.
 func (u *Usecase) Ask(ctx context.Context, q *model.Question) (*model.Answer, error) {
 	if !u.Allowed(q.UserId) {
 		metricQuestions.WithLabelValues(constant.OutcomeDenied).Inc()
@@ -96,74 +87,40 @@ func (u *Usecase) Ask(ctx context.Context, q *model.Question) (*model.Answer, er
 
 	started := time.Now()
 
-	answer, err := u.ask(ctx, q.ChatId, text)
+	answer, err := u.agent.Ask(ctx, &agentModel.AskReq{
+		ConversationId: conversationId(q.ChatId),
+		UserId:         strconv.FormatInt(q.UserId, 10),
+		UserName:       q.UserName,
+		Question:       text,
+	})
 	if err != nil {
-		metricQuestions.WithLabelValues(constant.OutcomeError).Inc()
-		return nil, err
+		metricQuestions.WithLabelValues(lo.Ternary(errors.Is(err, errs.Busy), constant.OutcomeBusy, constant.OutcomeError)).Inc()
+		return nil, fmt.Errorf("agent.Ask: %w", err)
 	}
 
 	metricAnswerDuration.Observe(time.Since(started).Seconds())
 	metricQuestions.WithLabelValues(lo.Ternary(answer.Incomplete == "", constant.OutcomeAnswered, constant.OutcomeIncomplete)).Inc()
+	slog.Info("question answered", "chat_id", q.ChatId, "incomplete", answer.Incomplete, "charts", len(answer.Charts))
 
-	return answer, nil
+	return &model.Answer{Text: answer.Text, Incomplete: answer.Incomplete, Charts: answer.Charts}, nil
 }
 
-func (u *Usecase) ask(ctx context.Context, chatId int64, text string) (*model.Answer, error) {
-	history, err := u.dialog.History(ctx, chatId)
-	if err != nil {
-		return nil, fmt.Errorf("dialog.History: %w", err)
-	}
-
-	result, err := u.agent.Run(ctx, &agentModel.Req{
-		History: lo.Map(history, func(t *dialogModel.Turn, _ int) agentModel.Turn {
-			return agentModel.Turn{Question: t.Question, Answer: t.Answer}
-		}),
-		Question: text,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("agent.Run: %w", err)
-	}
-
-	slog.Info("question answered",
-		"chat_id", chatId,
-		"steps", result.Steps,
-		"tool_calls", result.ToolCalls,
-		"incomplete", result.Incomplete,
-		"input_tokens", result.Usage.InputTokens,
-		"cached_tokens", result.Usage.CachedTokens,
-		"output_tokens", result.Usage.OutputTokens,
-		"charts", len(result.Charts),
-	)
-
-	// пустой ответ в историю не кладём: он только собьёт следующий вопрос
-	if result.Answer != "" {
-		if err = u.dialog.Append(ctx, chatId, text, result.Answer); err != nil {
-			return nil, fmt.Errorf("dialog.Append: %w", err)
-		}
-	}
-
-	return &model.Answer{
-		Text:       result.Answer,
-		Incomplete: result.Incomplete,
-		Charts:     result.Charts,
-		Steps:      result.Steps,
-		ToolCalls:  result.ToolCalls,
-		Usage:      result.Usage,
-		Trace:      result.Trace,
-	}, nil
-}
-
-// Reset забывает историю чата.
+// Reset забывает историю чата (в агенте).
 func (u *Usecase) Reset(ctx context.Context, chatId, userId int64) error {
 	if !u.Allowed(userId) {
 		return errs.NotAuthorized
 	}
 
-	if err := u.dialog.Reset(ctx, chatId); err != nil {
-		return fmt.Errorf("dialog.Reset: %w", err)
+	if err := u.agent.Reset(ctx, conversationId(chatId)); err != nil {
+		return fmt.Errorf("agent.Reset: %w", err)
 	}
 
 	return nil
+}
+
+// conversationId — беседа чата Telegram в агенте.
+func conversationId(chatId int64) string {
+	return "tg:" + strconv.FormatInt(chatId, 10)
 }
 
 func (u *Usecase) lock(chatId int64) bool {

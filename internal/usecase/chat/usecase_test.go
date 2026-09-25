@@ -3,111 +3,82 @@ package chat
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mechta-market/pulse_bot/internal/domain/dialog/repo/mem"
-	dialogServiceP "github.com/mechta-market/pulse_bot/internal/domain/dialog/service"
 	"github.com/mechta-market/pulse_bot/internal/errs"
 	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
 	"github.com/mechta-market/pulse_bot/internal/usecase/chat/model"
 )
 
 type fakeAgent struct {
-	reqs    []*agentModel.Req
-	result  *agentModel.Result
+	reqs    []*agentModel.AskReq
+	resets  []string
+	answer  *agentModel.Answer
+	err     error
 	started chan struct{}
 	release chan struct{}
 }
 
-func (f *fakeAgent) Run(_ context.Context, req *agentModel.Req) (*agentModel.Result, error) {
+func (f *fakeAgent) Ask(_ context.Context, req *agentModel.AskReq) (*agentModel.Answer, error) {
 	f.reqs = append(f.reqs, req)
 	if f.started != nil {
 		f.started <- struct{}{}
 		<-f.release
 	}
-	return f.result, nil
+	return f.answer, f.err
 }
 
-func newUsecase(agent *fakeAgent) *Usecase {
-	dialog := dialogServiceP.New(dialogServiceP.Config{MaxTurns: 10, Ttl: time.Hour}, mem.New())
-	return New(Config{AllowedUsers: []int64{42}}, dialog, agent)
+func (f *fakeAgent) Reset(_ context.Context, conversationId string) error {
+	f.resets = append(f.resets, conversationId)
+	return nil
 }
 
 func TestAsk(t *testing.T) {
-	ctx := context.Background()
-	agent := &fakeAgent{result: &agentModel.Result{Answer: "всё ок"}}
-	uc := newUsecase(agent)
+	agent := &fakeAgent{answer: &agentModel.Answer{Text: "всё ок", Charts: []agentModel.Chart{{Title: "c"}}}}
+	uc := New(Config{AllowedUsers: []int64{42}}, agent)
 
-	ans, err := uc.Ask(ctx, &model.Question{ChatId: 1, UserId: 42, Text: "  что с caravan?  "})
+	ans, err := uc.Ask(context.Background(), &model.Question{ChatId: 1, UserId: 42, UserName: "Даурен", Text: "  что с caravan?  "})
 	require.NoError(t, err)
-	assert.Equal(t, &model.Answer{Text: "всё ок"}, ans)
+	assert.Equal(t, "всё ок", ans.Text)
+	assert.Len(t, ans.Charts, 1)
+	assert.Equal(t, &agentModel.AskReq{ConversationId: "tg:1", UserId: "42", UserName: "Даурен", Question: "что с caravan?"}, agent.reqs[0])
 
-	// второй вопрос идёт с историей первого
-	_, err = uc.Ask(ctx, &model.Question{ChatId: 1, UserId: 42, Text: "а логи?"})
-	require.NoError(t, err)
-	require.Len(t, agent.reqs, 2)
-	assert.Equal(t, []agentModel.Turn{{Question: "что с caravan?", Answer: "всё ок"}}, agent.reqs[1].History)
-
-	// после /reset истории нет
-	require.NoError(t, uc.Reset(ctx, 1, 42))
-	_, err = uc.Ask(ctx, &model.Question{ChatId: 1, UserId: 42, Text: "ещё"})
-	require.NoError(t, err)
-	assert.Empty(t, agent.reqs[2].History)
+	require.NoError(t, uc.Reset(context.Background(), 1, 42))
+	assert.Equal(t, []string{"tg:1"}, agent.resets)
 }
 
 func TestAsk_Denied(t *testing.T) {
-	uc := newUsecase(&fakeAgent{})
+	uc := New(Config{AllowedUsers: []int64{42}}, &fakeAgent{})
 
 	_, err := uc.Ask(context.Background(), &model.Question{ChatId: 1, UserId: 7, Text: "q"})
-	assert.ErrorIs(t, err, errs.NotAuthorized)
+	require.ErrorIs(t, err, errs.NotAuthorized)
+	require.ErrorIs(t, uc.Reset(context.Background(), 1, 7), errs.NotAuthorized)
 
-	assert.ErrorIs(t, uc.Reset(context.Background(), 1, 7), errs.NotAuthorized)
+	_, err = New(Config{AllowedUsers: []int64{42}}, &fakeAgent{}).Ask(context.Background(), &model.Question{ChatId: 1, UserId: 42, Text: "  "})
+	require.ErrorIs(t, err, errs.InvalidRequest)
 }
 
-func TestAsk_Empty(t *testing.T) {
-	_, err := newUsecase(&fakeAgent{}).Ask(context.Background(), &model.Question{ChatId: 1, UserId: 42, Text: " "})
-	assert.ErrorIs(t, err, errs.InvalidRequest)
-}
-
-func TestAsk_BusyPerChat(t *testing.T) {
-	agent := &fakeAgent{
-		result:  &agentModel.Result{Answer: "ok"},
-		started: make(chan struct{}),
-		release: make(chan struct{}),
-	}
-	uc := newUsecase(agent)
-	ctx := context.Background()
+func TestAsk_Busy(t *testing.T) {
+	agent := &fakeAgent{answer: &agentModel.Answer{Text: "ok"}, started: make(chan struct{}), release: make(chan struct{})}
+	uc := New(Config{AllowedUsers: []int64{42}}, agent)
 
 	done := make(chan error)
 	go func() {
-		_, err := uc.Ask(ctx, &model.Question{ChatId: 1, UserId: 42, Text: "первый"})
+		_, err := uc.Ask(context.Background(), &model.Question{ChatId: 1, UserId: 42, Text: "первый"})
 		done <- err
 	}()
 	<-agent.started
 
-	// тот же чат занят
-	_, err := uc.Ask(ctx, &model.Question{ChatId: 1, UserId: 42, Text: "второй"})
-	assert.ErrorIs(t, err, errs.Busy)
+	_, err := uc.Ask(context.Background(), &model.Question{ChatId: 1, UserId: 42, Text: "второй"})
+	require.ErrorIs(t, err, errs.Busy)
 
 	close(agent.release)
 	require.NoError(t, <-done)
 
-	// освободился
-	agent.started = nil
-	_, err = uc.Ask(ctx, &model.Question{ChatId: 1, UserId: 42, Text: "третий"})
-	assert.NoError(t, err)
-}
-
-func TestAllowAll(t *testing.T) {
-	dialog := dialogServiceP.New(dialogServiceP.Config{MaxTurns: 10, Ttl: time.Hour}, mem.New())
-	uc := New(Config{AllowAll: true}, dialog, &fakeAgent{result: &agentModel.Result{Answer: "ок", Steps: 2, ToolCalls: 1}})
-
-	assert.True(t, uc.Allowed(0))
-
-	ans, err := uc.Ask(context.Background(), &model.Question{ChatId: 1, Text: "что с кластером?"})
-	require.NoError(t, err)
-	assert.Equal(t, &model.Answer{Text: "ок", Steps: 2, ToolCalls: 1}, ans)
+	// агент ответил «занято» (вопрос из другого процесса бота) — тоже Busy
+	agent = &fakeAgent{err: errs.Busy}
+	_, err = New(Config{AllowedUsers: []int64{42}}, agent).Ask(context.Background(), &model.Question{ChatId: 1, UserId: 42, Text: "q"})
+	require.ErrorIs(t, err, errs.Busy)
 }
