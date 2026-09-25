@@ -47,6 +47,15 @@ type Result struct {
 
 	// Trace — вызовы инструментов по порядку (ход разбора для отладки).
 	Trace []ToolTrace
+
+	// Charts — графики к ответу (render_chart), по порядку построения.
+	Charts []Chart
+}
+
+// Chart — картинка графика к ответу.
+type Chart struct {
+	Title string
+	Png   []byte
 }
 
 // ToolTrace — вызов инструмента в ходе разбора.
@@ -57,4 +66,5 @@ type ToolTrace struct {
 	Status    string // ToolStatus*
 	Output    string // что ушло модели
 	Duration  time.Duration
+	Chart     *Chart // построенный график (render_chart)
 }

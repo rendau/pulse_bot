@@ -19,4 +19,5 @@ type ChatUsecaseI interface {
 type SenderI interface {
 	SendMessage(ctx context.Context, params *bot.SendMessageParams) (*models.Message, error)
 	SendChatAction(ctx context.Context, params *bot.SendChatActionParams) (bool, error)
+	SendPhoto(ctx context.Context, params *bot.SendPhotoParams) (*models.Message, error)
 }

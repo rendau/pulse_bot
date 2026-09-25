@@ -22,6 +22,7 @@ import (
 	handlerTelegramP "github.com/mechta-market/pulse_bot/internal/handler/telegram"
 	"github.com/mechta-market/pulse_bot/internal/infra/httpx"
 	serviceAgentServiceP "github.com/mechta-market/pulse_bot/internal/service/agent/service"
+	serviceChartServiceP "github.com/mechta-market/pulse_bot/internal/service/chart/service"
 	"github.com/mechta-market/pulse_bot/internal/service/llm"
 	serviceLlmOpenaiServiceP "github.com/mechta-market/pulse_bot/internal/service/llm/openai/service"
 	servicePulseServiceP "github.com/mechta-market/pulse_bot/internal/service/pulse/service"
@@ -89,13 +90,16 @@ func (a *App) Init() {
 		httpx.New(httpx.Config{ResponseHeaderTimeout: 2 * time.Minute}),
 	)
 
+	// chart
+	chartService := serviceChartServiceP.New(serviceChartServiceP.Config{})
+
 	// agent
 	agentService := serviceAgentServiceP.New(
 		serviceAgentServiceP.Config{
 			MaxToolCalls: config.Conf.AgentMaxToolCalls,
 			Timeout:      config.Conf.AgentTimeout,
 		},
-		llmProvider, a.pulse,
+		llmProvider, a.pulse, chartService,
 	)
 
 	// dialog

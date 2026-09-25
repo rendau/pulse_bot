@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
 	localConstant "github.com/mechta-market/pulse_bot/internal/service/agent/service/constant"
+	chartModel "github.com/mechta-market/pulse_bot/internal/service/chart/model"
 	llmModel "github.com/mechta-market/pulse_bot/internal/service/llm/model"
 	pulseModel "github.com/mechta-market/pulse_bot/internal/service/pulse/model"
 )
@@ -58,6 +60,8 @@ func (f *fakePulse) Call(_ context.Context, name, arguments string) (*pulseModel
 	f.calls = append(f.calls, name+" "+arguments)
 
 	switch name {
+	case "query_metrics":
+		return &pulseModel.CallResult{Text: metricsOutput}, nil
 	case "broken":
 		return nil, errors.New("connection refused")
 	case "bad_args":
@@ -75,7 +79,7 @@ func textStep(text string) *llmModel.Response {
 }
 
 func newService(llm *fakeLlm, pulse *fakePulse, maxToolCalls int) *Service {
-	return New(Config{MaxToolCalls: maxToolCalls, Timeout: 5 * time.Minute}, llm, pulse)
+	return New(Config{MaxToolCalls: maxToolCalls, Timeout: 5 * time.Minute}, llm, pulse, nil)
 }
 
 func TestRun_ToolLoop(t *testing.T) {
@@ -217,4 +221,77 @@ func TestRun_Errors(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "llm.Complete")
 	})
+}
+
+const metricsOutput = `{"service":"caravan","metric_id":"memory_bytes","title":"Память","unit":"bytes","series":[
+	{"labels":{"pod":"caravan-api-1"},"points":[{"ts":"2026-09-25T10:00:00+05:00","value":500},{"ts":"2026-09-25T10:05:00+05:00","value":520}]},
+	{"labels":{"pod":"caravan-api-2"},"points":[{"ts":"2026-09-25T10:00:00+05:00","value":300}]}]}`
+
+// fakeChart запоминает, что просили нарисовать.
+type fakeChart struct {
+	mu    sync.Mutex
+	specs []*chartModel.Spec
+}
+
+func (f *fakeChart) Render(spec *chartModel.Spec) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(spec.Series) == 0 {
+		return nil, errors.New("no points")
+	}
+	f.specs = append(f.specs, spec)
+	return []byte("png"), nil
+}
+
+func TestRun_Charts(t *testing.T) {
+	llm := &fakeLlm{steps: []*llmModel.Response{
+		toolStep("s1", llmModel.ToolCall{Id: "c1", Name: "query_metrics", Arguments: `{"service":"caravan","metric_id":"memory_bytes","window":"1h"}`}),
+		toolStep("s2",
+			// ряды — из ответа query_metrics, единица и заголовок — оттуда же, если не заданы
+			llmModel.ToolCall{Id: "c2", Name: localConstant.ChartTool, Arguments: `{"type":"line","title":"","metrics":[{"service":"caravan","metric_id":"memory_bytes"}]}`},
+			// свои точки
+			llmModel.ToolCall{Id: "c3", Name: localConstant.ChartTool, Arguments: `{"type":"bar","title":"Ошибки за сутки","unit":"count","series":[{"name":"ошибки","points":[{"x":"seller","y":832},{"x":"stg","y":245}]}]}`},
+			// query_metrics для сервиса не вызывался
+			llmModel.ToolCall{Id: "c4", Name: localConstant.ChartTool, Arguments: `{"type":"line","title":"x","metrics":[{"service":"orders"}]}`},
+		),
+		textStep("память в норме"),
+	}}
+	chart := &fakeChart{}
+
+	res, err := New(Config{MaxToolCalls: 20, Timeout: 5 * time.Minute}, llm, &fakePulse{}, chart).Run(context.Background(), &agentModel.Req{Question: "память caravan?"})
+	require.NoError(t, err)
+
+	assert.True(t, lo.ContainsBy(llm.requests[0].Tools, func(d llmModel.ToolDef) bool { return d.Name == localConstant.ChartTool }))
+
+	require.Len(t, res.Charts, 2)
+	assert.Equal(t, "Память caravan", res.Charts[0].Title)
+	assert.Equal(t, "Ошибки за сутки", res.Charts[1].Title)
+
+	require.Len(t, chart.specs, 2)
+	line := lo.FindOrElse(chart.specs, nil, func(s *chartModel.Spec) bool { return s.Type == "line" })
+	require.NotNil(t, line)
+	assert.Equal(t, "bytes", line.Unit)
+	require.Len(t, line.Series, 2)
+	assert.Equal(t, "caravan-api-1", line.Series[0].Name)
+	assert.InDelta(t, 520, line.Series[0].Points[1].Value, 0)
+
+	results := llm.requests[2].ToolResults
+	require.Len(t, results, 3)
+	assert.Contains(t, results[0].Output, "OK: график")
+	assert.Contains(t, results[1].Output, "OK: график")
+	assert.Contains(t, results[2].Output, "was not called in this conversation")
+}
+
+func TestRun_ChartsLimit(t *testing.T) {
+	calls := make([]llmModel.ToolCall, 0, localConstant.MaxCharts+1)
+	for i := range localConstant.MaxCharts + 1 {
+		calls = append(calls, llmModel.ToolCall{Id: fmt.Sprintf("c%d", i), Name: localConstant.ChartTool,
+			Arguments: `{"type":"bar","title":"t","series":[{"points":[{"x":"a","y":1}]}]}`})
+	}
+	llm := &fakeLlm{steps: []*llmModel.Response{toolStep("s1", calls...), textStep("ok")}}
+
+	res, err := New(Config{MaxToolCalls: 20, Timeout: 5 * time.Minute}, llm, &fakePulse{}, &fakeChart{}).Run(context.Background(), &agentModel.Req{Question: "q"})
+	require.NoError(t, err)
+	assert.Len(t, res.Charts, localConstant.MaxCharts)
+	assert.Contains(t, llm.requests[1].ToolResults[localConstant.MaxCharts].Output, "не больше")
 }

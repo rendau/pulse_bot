@@ -49,10 +49,19 @@ Responses API, `gpt-6-sol`).
   - `agent` — агентный цикл: шаги модели, параллельные вызовы pulse (`errgroup`), лимит вызовов
     и времени (последняя минута — только на финальный ответ, без инструментов), системный промпт
     (`service/constant/prompts.go`), метрики LLM и инструментов; ход разбора — `Result.Trace`.
+    Свой инструмент бота `render_chart` (`service/chart.go`, описание и схема —
+    `constant/chart.go`): график рисует бот, не pulse. Временные ряды — ссылкой `metrics`
+    (service + metric_id) на ответ `query_metrics` этого разбора: точки не переписываются моделью
+    (ни токенов, ни ошибок в числах); `series` — свои точки для небольших данных. До 3 графиков на
+    ответ (`Result.Charts`); Telegram шлёт их фото после текста, подпись — заголовок.
   - `llm` — провайдер-независимый контракт: фасад `Provider` (`interface.go`), модели шага
     (`model/`). Адаптеры — `llm/<provider>/service`; сейчас `openai`.
   - `pulse` — MCP-клиент pulse: ленивое подключение, переподключение при потере сессии,
     bearer-токен, каталог инструментов перечитывается на каждый разбор.
+  - `chart` — графики к ответам (`gonum.org/v1/plot`, PNG в памяти, шрифты с кириллицей вшиты):
+    `line` — ряды во времени (ось — по Алматы, круглые метки), `bar` — горизонтальные столбцы
+    с подписями значений; единицы (`bytes`, `ratio`, `seconds`, `cores`, `rps`) переводятся в
+    привычные (МБ, %, мс, запросы в минуту — как в правилах ответа).
 - `internal/infra/httpx/` — единая фабрика http-клиентов (таймауты, лимиты; все клиенты только через неё).
 - `internal/infra/metrics/` — реестр Prometheus.
 - `internal/util/tgmd/` — Markdown → Telegram HTML и нарезка сообщения (с тестами).
@@ -207,7 +216,8 @@ domain service → repo
   `chat_id` — номер беседы (своя история, с Telegram не пересекается); `reset: true` — забыть историю
   перед вопросом (без `text` — только сброс); `output_limit` — байт ответа каждого инструмента в
   `trace` (по умолчанию 2000, максимум 100 KB).
-- Ответ: `answer`, `incomplete`, `duration_ms`, `steps`, `tool_calls`, `usage`, `trace[]` (`step`,
+- Ответ: `answer`, `incomplete`, `duration_ms`, `steps`, `tool_calls`, `usage`, `charts[]` (`title`,
+  `bytes`, `png_base64` — графики, как ушли бы в Telegram), `trace[]` (`step`,
   `tool`, `arguments`, `status` ok/error/tool_error/skipped, `duration_ms`, `output_bytes`,
   `truncated`, `output`). Ошибки — `{"error": ...}`: 401 токен, 400 тело/пустой текст, 409 в беседе
   идёт разбор, 504 таймаут. Запрос синхронный, до `AGENT_TIMEOUT` (5 мин).

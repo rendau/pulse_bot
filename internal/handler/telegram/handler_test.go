@@ -38,7 +38,15 @@ func (f *fakeChat) Reset(context.Context, int64, int64) error {
 type fakeSender struct {
 	mu       sync.Mutex
 	sent     []*bot.SendMessageParams
+	photos   []*bot.SendPhotoParams
 	failHtml bool
+}
+
+func (f *fakeSender) SendPhoto(_ context.Context, p *bot.SendPhotoParams) (*models.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.photos = append(f.photos, p)
+	return &models.Message{}, nil
 }
 
 func (f *fakeSender) SendMessage(_ context.Context, p *bot.SendMessageParams) (*models.Message, error) {
@@ -182,4 +190,19 @@ func TestHandle_IgnoresGroups(t *testing.T) {
 	// в группе обработчик не запускается вовсе (bot не нужен)
 	h.Handle(context.Background(), nil, &models.Update{Message: msg})
 	h.Wait()
+}
+
+func TestProcess_Charts(t *testing.T) {
+	sender := &fakeSender{}
+	h := New(&fakeChat{answer: &chatModel.Answer{Text: "память в норме", Charts: []agentModel.Chart{
+		{Title: "Память caravan", Png: []byte("png1")}, {Title: "Ошибки", Png: []byte("png2")},
+	}}})
+	h.process(context.Background(), sender, &models.Message{ID: 1, Chat: models.Chat{ID: 42, Type: models.ChatTypePrivate}, From: &models.User{ID: 7}, Text: "память caravan?"})
+
+	require.Len(t, sender.sent, 1, "сначала текст")
+	require.Len(t, sender.photos, 2)
+	assert.Equal(t, "Память caravan", sender.photos[0].Caption)
+	upload, ok := sender.photos[1].Photo.(*models.InputFileUpload)
+	require.True(t, ok)
+	assert.Equal(t, "chart-2.png", upload.Filename)
 }

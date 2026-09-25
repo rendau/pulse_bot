@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -29,6 +30,9 @@ const (
 	sendTimeout = 10 * time.Second
 
 	errorTextLimit = 300
+
+	// captionLimit — подпись к фото в Telegram до 1024 символов
+	captionLimit = 1000
 )
 
 // keyboard — постоянная кнопка сброса под полем ввода (вместо набора /reset руками).
@@ -164,6 +168,18 @@ func (h *Handler) sendAnswer(ctx context.Context, sender SenderI, msg *models.Me
 				slog.Error("telegram: send message", "chat_id", msg.Chat.ID, "error", err)
 				return
 			}
+		}
+	}
+
+	// графики — после текста: сначала вывод, потом картинки к нему
+	for i, chart := range answer.Charts {
+		_, err := sender.SendPhoto(ctx, &bot.SendPhotoParams{
+			ChatID:  msg.Chat.ID,
+			Photo:   &models.InputFileUpload{Filename: fmt.Sprintf("chart-%d.png", i+1), Data: bytes.NewReader(chart.Png)},
+			Caption: truncate(chart.Title, captionLimit),
+		})
+		if err != nil {
+			slog.Error("telegram: send chart", "chat_id", msg.Chat.ID, "error", err)
 		}
 	}
 }

@@ -31,11 +31,12 @@ type Service struct {
 	cfg   Config
 	llm   llmI
 	pulse pulseI
+	chart chartI // nil — без графиков
 	now   func() time.Time
 }
 
-func New(cfg Config, llm llmI, pulse pulseI) *Service {
-	return &Service{cfg: cfg, llm: llm, pulse: pulse, now: time.Now}
+func New(cfg Config, llm llmI, pulse pulseI, chart chartI) *Service {
+	return &Service{cfg: cfg, llm: llm, pulse: pulse, chart: chart, now: time.Now}
 }
 
 func (s *Service) Run(ctx context.Context, req *agentModel.Req) (*agentModel.Result, error) {
@@ -55,6 +56,11 @@ func (s *Service) Run(ctx context.Context, req *agentModel.Req) (*agentModel.Res
 		System:   localConstant.SystemPrompt(catalog.Instructions),
 		Messages: buildMessages(req, started),
 		Tools:    lo.Map(catalog.Tools, encodeTool),
+	}
+	if s.chart != nil {
+		llmReq.Tools = append(llmReq.Tools, llmModel.ToolDef{
+			Name: localConstant.ChartTool, Description: localConstant.ChartDescription, Parameters: localConstant.ChartSchema,
+		})
 	}
 
 	result := &agentModel.Result{}
@@ -102,8 +108,9 @@ func (s *Service) Run(ctx context.Context, req *agentModel.Req) (*agentModel.Res
 		}
 
 		toolCtx, toolCancel := context.WithDeadline(ctx, loopDeadline)
-		traces := s.callTools(toolCtx, result.Steps, resp.ToolCalls)
+		traces := s.callTools(toolCtx, result.Steps, resp.ToolCalls, result.Trace)
 		toolCancel()
+		result.Charts = collectCharts(result.Charts, traces)
 		llmReq.ToolResults = toolResults(resp.ToolCalls, traces)
 		result.Trace = append(result.Trace, traces...)
 		result.ToolCalls += len(resp.ToolCalls)
@@ -132,20 +139,61 @@ func (s *Service) complete(ctx context.Context, req *llmModel.Request) (*llmMode
 }
 
 // callTools выполняет вызовы шага step параллельно; ошибка вызова не роняет
-// разбор, а уходит модели текстом.
-func (s *Service) callTools(ctx context.Context, step int, calls []llmModel.ToolCall) []agentModel.ToolTrace {
+// разбор, а уходит модели текстом. prior — вызовы прошлых шагов (данные для графиков).
+func (s *Service) callTools(ctx context.Context, step int, calls []llmModel.ToolCall, prior []agentModel.ToolTrace) []agentModel.ToolTrace {
 	traces := make([]agentModel.ToolTrace, len(calls))
 
 	var g errgroup.Group
 	for i, call := range calls {
 		g.Go(func() error {
-			traces[i] = s.callTool(ctx, step, call)
+			if call.Name == localConstant.ChartTool && s.chart != nil {
+				traces[i] = s.callChart(step, call, prior)
+			} else {
+				traces[i] = s.callTool(ctx, step, call)
+			}
 			return nil
 		})
 	}
 	_ = g.Wait()
 
 	return traces
+}
+
+// callChart — render_chart: график рисует сам бот, pulse не нужен.
+func (s *Service) callChart(step int, call llmModel.ToolCall, prior []agentModel.ToolTrace) agentModel.ToolTrace {
+	started := s.now()
+
+	chart, output, err := s.renderChart(call.Arguments, prior)
+	trace := agentModel.ToolTrace{Step: step, Name: call.Name, Arguments: call.Arguments, Duration: s.now().Sub(started)}
+	metricToolCallDuration.WithLabelValues(call.Name).Observe(trace.Duration.Seconds())
+
+	if err != nil {
+		trace.Status, trace.Output = agentModel.ToolStatusToolError, localConstant.ToolErrorPrefix+err.Error()
+		slog.Debug("chart error", "arguments", call.Arguments, "error", err)
+	} else {
+		trace.Status, trace.Output, trace.Chart = agentModel.ToolStatusOk, output, chart
+	}
+	metricToolCalls.WithLabelValues(call.Name, trace.Status).Inc()
+
+	return trace
+}
+
+// collectCharts добавляет графики шага к построенным; сверх MaxCharts — отказ модели
+// вместо «построен».
+func collectCharts(charts []agentModel.Chart, traces []agentModel.ToolTrace) []agentModel.Chart {
+	for i := range traces {
+		if traces[i].Chart == nil {
+			continue
+		}
+		if len(charts) >= localConstant.MaxCharts {
+			traces[i].Chart = nil
+			traces[i].Status = agentModel.ToolStatusToolError
+			traces[i].Output = localConstant.ToolErrorPrefix + fmt.Sprintf(localConstant.ChartLimit, localConstant.MaxCharts)
+			continue
+		}
+		charts = append(charts, *traces[i].Chart)
+	}
+	return charts
 }
 
 func (s *Service) callTool(ctx context.Context, step int, call llmModel.ToolCall) agentModel.ToolTrace {

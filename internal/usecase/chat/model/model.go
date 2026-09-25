@@ -17,6 +17,8 @@ type Question struct {
 type Answer struct {
 	Text       string
 	Incomplete string
+	// Charts — картинки графиков к ответу
+	Charts []agentModel.Chart
 
 	// ход разбора (отладочная ручка; Telegram их не показывает)
 	Steps     int

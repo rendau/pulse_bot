@@ -132,6 +132,7 @@ func (u *Usecase) ask(ctx context.Context, chatId int64, text string) (*model.An
 		"input_tokens", result.Usage.InputTokens,
 		"cached_tokens", result.Usage.CachedTokens,
 		"output_tokens", result.Usage.OutputTokens,
+		"charts", len(result.Charts),
 	)
 
 	// пустой ответ в историю не кладём: он только собьёт следующий вопрос
@@ -144,6 +145,7 @@ func (u *Usecase) ask(ctx context.Context, chatId int64, text string) (*model.An
 	return &model.Answer{
 		Text:       result.Answer,
 		Incomplete: result.Incomplete,
+		Charts:     result.Charts,
 		Steps:      result.Steps,
 		ToolCalls:  result.ToolCalls,
 		Usage:      result.Usage,

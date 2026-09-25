@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 
+	chartModel "github.com/mechta-market/pulse_bot/internal/service/chart/model"
 	llmModel "github.com/mechta-market/pulse_bot/internal/service/llm/model"
 	pulseModel "github.com/mechta-market/pulse_bot/internal/service/pulse/model"
 )
@@ -10,6 +11,11 @@ import (
 type llmI interface {
 	Name() string
 	Complete(ctx context.Context, req *llmModel.Request) (*llmModel.Response, error)
+}
+
+// chartI — рисование графиков к ответу (render_chart).
+type chartI interface {
+	Render(spec *chartModel.Spec) ([]byte, error)
 }
 
 type pulseI interface {

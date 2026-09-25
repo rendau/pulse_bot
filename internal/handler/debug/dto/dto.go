@@ -2,6 +2,7 @@
 package dto
 
 import (
+	"encoding/base64"
 	"strings"
 
 	"github.com/samber/lo"
@@ -38,6 +39,14 @@ type AskRep struct {
 	ToolCalls  int             `json:"tool_calls"`
 	Usage      UsageRep        `json:"usage"`
 	Trace      []*ToolTraceRep `json:"trace"`
+	// Charts — графики к ответу, как ушли бы в Telegram (PNG в base64)
+	Charts []ChartRep `json:"charts,omitempty"`
+}
+
+type ChartRep struct {
+	Title     string `json:"title"`
+	Bytes     int    `json:"bytes"`
+	PngBase64 string `json:"png_base64"`
 }
 
 type UsageRep struct {
@@ -79,6 +88,9 @@ func EncodeAskRep(a *chatModel.Answer, outputLimit int) *AskRep {
 			OutputTokens:    a.Usage.OutputTokens,
 			ReasoningTokens: a.Usage.ReasoningTokens,
 		},
+		Charts: lo.Map(a.Charts, func(c agentModel.Chart, _ int) ChartRep {
+			return ChartRep{Title: c.Title, Bytes: len(c.Png), PngBase64: base64.StdEncoding.EncodeToString(c.Png)}
+		}),
 		Trace: lo.Map(a.Trace, func(t agentModel.ToolTrace, _ int) *ToolTraceRep {
 			output, truncated := truncate(t.Output, limit)
 			return &ToolTraceRep{
