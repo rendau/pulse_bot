@@ -21,6 +21,7 @@ import (
 const (
 	askPath   = "/v1/ask"
 	resetPath = "/v1/reset"
+	evalPath  = "/v1/eval"
 
 	maxBodyBytes = 16 << 20 // ответ с тремя графиками в base64 — сотни КБ
 )
@@ -61,6 +62,15 @@ func (s *Service) Ask(ctx context.Context, req *agentModel.AskReq) (*agentModel.
 	return answer, nil
 }
 
+// Eval — прогон эталонных вопросов у агента: минуты, ответ — таблица.
+func (s *Service) Eval(ctx context.Context, only []string) (string, error) {
+	rep := &evalRep{}
+	if err := s.sendRequest(ctx, evalPath, &evalReq{Only: only}, rep); err != nil {
+		return "", err
+	}
+	return rep.Text, nil
+}
+
 func (s *Service) Reset(ctx context.Context, conversationId string) error {
 	return s.sendRequest(ctx, resetPath, &resetReq{ConversationId: conversationId}, &resetRep{})
 }
@@ -96,7 +106,9 @@ func (s *Service) sendRequest(ctx context.Context, path string, reqObj, repObj a
 		msg := lo.CoalesceOrEmpty(e.Error, strings.TrimSpace(string(raw)))
 		switch e.Code {
 		case "busy":
-			return errs.Busy
+			return fmt.Errorf("%w: %s", errs.Busy, msg)
+		case "forbidden":
+			return fmt.Errorf("%w: %s", errs.NotAuthorized, msg)
 		case "invalid_request":
 			return fmt.Errorf("%w: %s", errs.InvalidRequest, msg)
 		case "timeout":
@@ -134,6 +146,14 @@ type askRep struct {
 		Title string `json:"title"`
 		Png   string `json:"png"`
 	} `json:"charts"`
+}
+
+type evalReq struct {
+	Only []string `json:"only,omitempty"`
+}
+
+type evalRep struct {
+	Text string `json:"text"`
 }
 
 type resetReq struct {

@@ -94,6 +94,9 @@ func (h *Handler) process(ctx context.Context, sender SenderI, msg *models.Messa
 		}
 		h.replyWithKeyboard(ctx, sender, msg, textWelcome)
 		return
+	case isCommand(text, "/eval"):
+		h.eval(ctx, sender, msg, userId, strings.Fields(text)[1:])
+		return
 	case isCommand(text, "/reset"), text == buttonReset:
 		if err := h.chat.Reset(ctx, chatId, userId); err != nil {
 			h.replyError(ctx, sender, msg, err)
@@ -114,25 +117,65 @@ func (h *Handler) process(ctx context.Context, sender SenderI, msg *models.Messa
 	h.sendAnswer(ctx, sender, msg, answer)
 }
 
+// eval — прогон эталонных вопросов агента (админы): «запустил», «печатает…» до конца, таблица
+// моноширинным текстом. only — id вопросов из аргументов команды.
+func (h *Handler) eval(ctx context.Context, sender SenderI, msg *models.Message, userId int64, only []string) {
+	if !h.chat.Admin(userId) {
+		h.reply(ctx, sender, msg, textEvalDenied)
+		return
+	}
+	h.reply(ctx, sender, msg, textEvalStarted)
+
+	typingCtx, stopTyping := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Go(func() { h.keepTyping(typingCtx, sender, msg.Chat.ID) })
+
+	text, err := h.chat.Eval(ctx, userId, only)
+
+	stopTyping()
+	wg.Wait()
+
+	switch {
+	case errors.Is(err, errs.Busy):
+		h.reply(ctx, sender, msg, textEvalBusy)
+		return
+	case err != nil:
+		slog.Error("eval failed", "chat_id", msg.Chat.ID, "error", err)
+		h.reply(ctx, sender, msg, fmt.Sprintf(textEvalFailed, html.EscapeString(truncate(err.Error(), errorTextLimit))))
+		return
+	}
+
+	for _, chunk := range splitLines(text, chunkLimit) {
+		h.reply(ctx, sender, msg, "<pre>"+html.EscapeString(chunk)+"</pre>")
+	}
+}
+
+// splitLines режет текст по строкам на куски не длиннее limit.
+func splitLines(text string, limit int) []string {
+	var chunks []string
+	var cur strings.Builder
+	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		if cur.Len() > 0 && cur.Len()+len(line)+1 > limit {
+			chunks = append(chunks, cur.String())
+			cur.Reset()
+		}
+		if cur.Len() > 0 {
+			cur.WriteString("\n")
+		}
+		cur.WriteString(line)
+	}
+	if cur.Len() > 0 {
+		chunks = append(chunks, cur.String())
+	}
+	return chunks
+}
+
 // askWithTyping держит «печатает…», пока идёт разбор.
 func (h *Handler) askWithTyping(ctx context.Context, sender SenderI, q *chatModel.Question) (*chatModel.Answer, error) {
 	typingCtx, stopTyping := context.WithCancel(ctx)
 
 	var wg sync.WaitGroup
-	wg.Go(func() {
-		ticker := time.NewTicker(typingInterval)
-		defer ticker.Stop()
-
-		for {
-			_, _ = sender.SendChatAction(typingCtx, &bot.SendChatActionParams{ChatID: q.ChatId, Action: models.ChatActionTyping})
-
-			select {
-			case <-typingCtx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
-	})
+	wg.Go(func() { h.keepTyping(typingCtx, sender, q.ChatId) })
 
 	answer, err := h.chat.Ask(ctx, q)
 
@@ -140,6 +183,22 @@ func (h *Handler) askWithTyping(ctx context.Context, sender SenderI, q *chatMode
 	wg.Wait()
 
 	return answer, err
+}
+
+// keepTyping — «печатает…» до отмены ctx (Telegram гасит его через ~5 с).
+func (h *Handler) keepTyping(ctx context.Context, sender SenderI, chatId int64) {
+	ticker := time.NewTicker(typingInterval)
+	defer ticker.Stop()
+
+	for {
+		_, _ = sender.SendChatAction(ctx, &bot.SendChatActionParams{ChatID: chatId, Action: models.ChatActionTyping})
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func (h *Handler) sendAnswer(ctx context.Context, sender SenderI, msg *models.Message, answer *chatModel.Answer) {

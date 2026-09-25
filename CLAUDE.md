@@ -33,6 +33,8 @@ Telegram-бот (long polling, `github.com/go-telegram/bot`) — тонкий к
     /healthcheck, /docs/*, /metrics.
 - `internal/config/` — конфигурация через env (`config.go`).
 - `internal/handler/telegram/` — транспорт: личные сообщения, команды `/start` `/help` `/reset` (и кнопка сброса под полем ввода),
+  `/eval [id…]` — прогон эталонных вопросов агента (только `TELEGRAM_ADMIN_USERS`; «печатает…» до
+  конца, таблица моноширинно),
   «печатает…», отправка ответа (Markdown → Telegram HTML, нарезка под 4096, фолбэк на plain text),
   графики — фото после текста, тексты ответов бота — `texts.go`.
 - `internal/usecase/chat/` — вопрос: белый список, «один вопрос за раз на чат», агент, метрики
@@ -136,7 +138,9 @@ handler`) и жизненный цикл. Бизнес-логики тут не�
 ### Переменные окружения
 - Описаны в `internal/config/config.go`, пример — `.env.example`.
 - Обязательные: `TELEGRAM_BOT_TOKEN`, `AGENT_URL` (`http://pulse-agent.default`); `AGENT_KEY` — ключ
-  бота в `API_KEYS` агента. Пустой `TELEGRAM_ALLOWED_USERS` — бот отказывает всем (предупреждение в логе).
+  бота в `API_KEYS` агента (бот должен быть и в `EVAL_CLIENTS` агента — для `/eval`). Пустой
+  `TELEGRAM_ALLOWED_USERS` — бот отказывает всем (предупреждение в логе). `TELEGRAM_ADMIN_USERS` —
+  кому можно `/eval`; `AGENT_TIMEOUT` (6m) — ожидание ответа, `AGENT_EVAL_TIMEOUT` (21m) — прогона.
 
 ### Метрики
 - Prometheus на `/metrics` (системный сервер) при `WITH_METRICS=true`, реестр `metrics.Registry`.

@@ -18,9 +18,19 @@ import (
 )
 
 type fakeChat struct {
-	answer *chatModel.Answer
-	err    error
-	resets int
+	answer   *chatModel.Answer
+	err      error
+	resets   int
+	evalText string
+	evalErr  error
+	evalOnly []string
+}
+
+func (f *fakeChat) Admin(userId int64) bool { return userId == 42 }
+
+func (f *fakeChat) Eval(_ context.Context, _ int64, only []string) (string, error) {
+	f.evalOnly = only
+	return f.evalText, f.evalErr
 }
 
 func (f *fakeChat) Allowed(userId int64) bool { return userId == 42 }
@@ -205,4 +215,41 @@ func TestProcess_Charts(t *testing.T) {
 	upload, ok := sender.photos[1].Photo.(*models.InputFileUpload)
 	require.True(t, ok)
 	assert.Equal(t, "chart-2.png", upload.Filename)
+}
+
+func TestProcess_Eval(t *testing.T) {
+	msg := func(userId int64, text string) *models.Message {
+		return &models.Message{ID: 1, Chat: models.Chat{ID: 42, Type: models.ChatTypePrivate}, From: &models.User{ID: userId}, Text: text}
+	}
+
+	chat := &fakeChat{evalText: "✅ a  1.0s\n❌ b <x>\n\nИтого: 1/2"}
+	sender := &fakeSender{}
+	New(chat).process(context.Background(), sender, msg(42, "/eval a b"))
+
+	require.Len(t, sender.sent, 2)
+	assert.Equal(t, textEvalStarted, sender.sent[0].Text)
+	assert.Equal(t, "<pre>✅ a  1.0s\n❌ b &lt;x&gt;\n\nИтого: 1/2</pre>", sender.sent[1].Text, "таблица моноширинно, HTML экранирован")
+	assert.Equal(t, []string{"a", "b"}, chat.evalOnly)
+
+	// не админ
+	sender = &fakeSender{}
+	New(chat).process(context.Background(), sender, msg(7, "/eval"))
+	require.Len(t, sender.sent, 1)
+	assert.Equal(t, textEvalDenied, sender.sent[0].Text)
+
+	// прогон уже идёт
+	sender = &fakeSender{}
+	New(&fakeChat{evalErr: errs.Busy}).process(context.Background(), sender, msg(42, "/eval"))
+	require.Len(t, sender.sent, 2)
+	assert.Equal(t, textEvalBusy, sender.sent[1].Text)
+}
+
+func TestSplitLines(t *testing.T) {
+	text := strings.Repeat("строка таблицы\n", 10)
+	chunks := splitLines(text, 60)
+	require.Greater(t, len(chunks), 1)
+	for _, c := range chunks {
+		assert.LessOrEqual(t, len(c), 60)
+	}
+	assert.Equal(t, strings.TrimRight(text, "\n"), strings.Join(chunks, "\n"))
 }

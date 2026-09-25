@@ -41,10 +41,17 @@ func init() {
 // Config — доступ к боту.
 type Config struct {
 	AllowedUsers []int64
+	// AdminUsers — кому можно /eval
+	AdminUsers []int64
+	// AskTimeout, EvalTimeout — сколько ждать ответ агента и прогон эталонов
+	AskTimeout  time.Duration
+	EvalTimeout time.Duration
 }
 
 type Usecase struct {
+	cfg     Config
 	allowed map[int64]struct{}
+	admins  map[int64]struct{}
 	agent   AgentI
 
 	mu   sync.Mutex
@@ -53,7 +60,9 @@ type Usecase struct {
 
 func New(cfg Config, agent AgentI) *Usecase {
 	return &Usecase{
+		cfg:     cfg,
 		allowed: lo.SliceToMap(cfg.AllowedUsers, func(id int64) (int64, struct{}) { return id, struct{}{} }),
+		admins:  lo.SliceToMap(cfg.AdminUsers, func(id int64) (int64, struct{}) { return id, struct{}{} }),
 		agent:   agent,
 		busy:    map[int64]struct{}{},
 	}
@@ -87,6 +96,12 @@ func (u *Usecase) Ask(ctx context.Context, q *model.Question) (*model.Answer, er
 
 	started := time.Now()
 
+	if u.cfg.AskTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, u.cfg.AskTimeout)
+		defer cancel()
+	}
+
 	answer, err := u.agent.Ask(ctx, &agentModel.AskReq{
 		ConversationId: conversationId(q.ChatId),
 		UserId:         strconv.FormatInt(q.UserId, 10),
@@ -103,6 +118,31 @@ func (u *Usecase) Ask(ctx context.Context, q *model.Question) (*model.Answer, er
 	slog.Info("question answered", "chat_id", q.ChatId, "incomplete", answer.Incomplete, "charts", len(answer.Charts))
 
 	return &model.Answer{Text: answer.Text, Incomplete: answer.Incomplete, Charts: answer.Charts}, nil
+}
+
+// Admin — может ли пользователь запускать /eval.
+func (u *Usecase) Admin(userId int64) bool {
+	_, ok := u.admins[userId]
+	return ok
+}
+
+// Eval — прогон эталонных вопросов агента (только админы): таблица текстом.
+func (u *Usecase) Eval(ctx context.Context, userId int64, only []string) (string, error) {
+	if !u.Admin(userId) {
+		return "", errs.NotAuthorized
+	}
+	if u.cfg.EvalTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, u.cfg.EvalTimeout)
+		defer cancel()
+	}
+
+	text, err := u.agent.Eval(ctx, only)
+	if err != nil {
+		return "", fmt.Errorf("agent.Eval: %w", err)
+	}
+	slog.Info("eval finished", "user_id", userId, "only", only)
+	return text, nil
 }
 
 // Reset забывает историю чата (в агенте).

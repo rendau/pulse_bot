@@ -9,4 +9,5 @@ import (
 type AgentI interface {
 	Ask(ctx context.Context, req *agentModel.AskReq) (*agentModel.Answer, error)
 	Reset(ctx context.Context, conversationId string) error
+	Eval(ctx context.Context, only []string) (string, error)
 }

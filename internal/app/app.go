@@ -55,12 +55,18 @@ func (a *App) Init() {
 	agentService := serviceAgentServiceP.New(
 		config.Conf.AgentUrl,
 		config.Conf.AgentKey,
-		// ответ приходит целиком после разбора: заголовков ждём до таймаута агента
-		httpx.New(httpx.Config{ResponseHeaderTimeout: config.Conf.AgentTimeout}),
+		// ответ приходит целиком после разбора, прогон эталонов — после всех вопросов: заголовков
+		// ждём до большего из таймаутов, конкретный вызов ограничивает контекст
+		httpx.New(httpx.Config{ResponseHeaderTimeout: max(config.Conf.AgentTimeout, config.Conf.AgentEvalTimeout)}),
 	)
 
 	// chat
-	chatUsecase := usecaseChatP.New(usecaseChatP.Config{AllowedUsers: config.Conf.TelegramAllowedUsers}, agentService)
+	chatUsecase := usecaseChatP.New(usecaseChatP.Config{
+		AllowedUsers: config.Conf.TelegramAllowedUsers,
+		AdminUsers:   config.Conf.TelegramAdminUsers,
+		AskTimeout:   config.Conf.AgentTimeout,
+		EvalTimeout:  config.Conf.AgentEvalTimeout,
+	}, agentService)
 	if len(config.Conf.TelegramAllowedUsers) == 0 {
 		slog.Warn("TELEGRAM_ALLOWED_USERS is empty: bot will deny everyone")
 	}

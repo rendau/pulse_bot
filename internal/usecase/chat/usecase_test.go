@@ -13,12 +13,13 @@ import (
 )
 
 type fakeAgent struct {
-	reqs    []*agentModel.AskReq
-	resets  []string
-	answer  *agentModel.Answer
-	err     error
-	started chan struct{}
-	release chan struct{}
+	reqs     []*agentModel.AskReq
+	resets   []string
+	answer   *agentModel.Answer
+	err      error
+	started  chan struct{}
+	release  chan struct{}
+	evalOnly []string
 }
 
 func (f *fakeAgent) Ask(_ context.Context, req *agentModel.AskReq) (*agentModel.Answer, error) {
@@ -28,6 +29,11 @@ func (f *fakeAgent) Ask(_ context.Context, req *agentModel.AskReq) (*agentModel.
 		<-f.release
 	}
 	return f.answer, f.err
+}
+
+func (f *fakeAgent) Eval(_ context.Context, only []string) (string, error) {
+	f.evalOnly = only
+	return "таблица", nil
 }
 
 func (f *fakeAgent) Reset(_ context.Context, conversationId string) error {
@@ -81,4 +87,17 @@ func TestAsk_Busy(t *testing.T) {
 	agent = &fakeAgent{err: errs.Busy}
 	_, err = New(Config{AllowedUsers: []int64{42}}, agent).Ask(context.Background(), &model.Question{ChatId: 1, UserId: 42, Text: "q"})
 	require.ErrorIs(t, err, errs.Busy)
+}
+
+func TestEval(t *testing.T) {
+	agent := &fakeAgent{}
+	uc := New(Config{AllowedUsers: []int64{42, 7}, AdminUsers: []int64{42}}, agent)
+
+	text, err := uc.Eval(context.Background(), 42, []string{"order-found"})
+	require.NoError(t, err)
+	assert.Equal(t, "таблица", text)
+	assert.Equal(t, []string{"order-found"}, agent.evalOnly)
+
+	_, err = uc.Eval(context.Background(), 7, nil)
+	require.ErrorIs(t, err, errs.NotAuthorized, "в белом списке, но не админ")
 }

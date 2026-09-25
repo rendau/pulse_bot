@@ -11,4 +11,6 @@ import (
 type Agent interface {
 	Ask(ctx context.Context, req *agentModel.AskReq) (*agentModel.Answer, error)
 	Reset(ctx context.Context, conversationId string) error
+	// Eval — прогон эталонных вопросов агента (only — id; пусто — все): таблица текстом
+	Eval(ctx context.Context, only []string) (string, error)
 }

@@ -63,3 +63,18 @@ func TestErrors(t *testing.T) {
 	assert.ErrorContains(t, err, "bad gateway")
 	assert.False(t, errors.Is(err, errs.Busy))
 }
+
+func TestEval(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/eval", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		_, _ = w.Write([]byte(`{"text":"Итого: 20/20","report":{}}`))
+	}))
+	defer srv.Close()
+
+	text, err := New(srv.URL, "k", srv.Client()).Eval(context.Background(), []string{"a"})
+	require.NoError(t, err)
+	assert.Equal(t, "Итого: 20/20", text)
+	assert.Equal(t, []any{"a"}, got["only"])
+}
