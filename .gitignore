@@ -18,3 +18,4 @@ cover.html
 /*.custom
 .DS_Store
 .gocache
+eval-report*.json

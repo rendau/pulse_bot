@@ -19,3 +19,8 @@ lint:
 
 test:
 	go test ./...
+
+# эталонные вопросы агенту (прод-бот через ruto), сравнение с evals/baseline.json;
+# часть набора: make eval ARGS="-only order-found,cluster-errors"
+eval:
+	go run ./cmd/eval -baseline evals/baseline.json $(ARGS)
