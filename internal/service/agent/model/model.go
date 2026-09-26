@@ -44,6 +44,18 @@ type Notification struct {
 	Text         string // Markdown как у ответов (формат telegram)
 	Investigated bool
 	MutedBy      *int64
+	// NotSubscribed — у беседы есть подписки, и уведомление ни под одну не подходит
+	NotSubscribed bool
+}
+
+// Subscription — подписка беседы: что присылать (пустое поле — любое; нет подписок — всё).
+type Subscription struct {
+	Id          int64
+	Service     string
+	Kind        string
+	MinSeverity string // info | warning | critical
+	Note        string
+	CreatedBy   string
 }
 
 // Mute — приглушение уведомлений в беседе; пустые поля — любое, Until nil — навсегда.

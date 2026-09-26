@@ -8,6 +8,7 @@ import (
 
 	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
 	chatModel "github.com/mechta-market/pulse_bot/internal/usecase/chat/model"
+	notifyModel "github.com/mechta-market/pulse_bot/internal/usecase/notify/model"
 )
 
 type ChatUsecaseI interface {
@@ -24,10 +25,12 @@ type NotifyUsecaseI interface {
 	NotifyChat(chatId int64) bool
 	CanManage(chatId, userId int64) bool
 	Pending(ctx context.Context, chatId int64) ([]*agentModel.Notification, error)
-	Ack(ctx context.Context, chatId, lastId int64, sent, muted, failed int) error
+	Ack(ctx context.Context, chatId, lastId int64, delivery notifyModel.Delivery) error
 	Mute(ctx context.Context, chatId, userId int64, userName string, notificationId int64, duration string) (*agentModel.Mute, error)
 	Unmute(ctx context.Context, chatId, userId, muteId int64) error
 	Mutes(ctx context.Context, chatId, userId int64) ([]*agentModel.Mute, []*agentModel.Notification, error)
+	Subscriptions(ctx context.Context, chatId, userId int64) ([]*agentModel.Subscription, error)
+	Unsubscribe(ctx context.Context, chatId, userId, id int64) error
 }
 
 // SenderI — методы Bot API, которыми отвечает бот (реализует *bot.Bot).

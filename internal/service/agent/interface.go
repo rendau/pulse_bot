@@ -22,4 +22,7 @@ type Agent interface {
 	Unmute(ctx context.Context, conversationId string, id int64) error
 	// Mutes — действующие приглушения беседы и последние скрытые ими уведомления
 	Mutes(ctx context.Context, conversationId string, mutedLimit int) ([]*agentModel.Mute, []*agentModel.Notification, error)
+	// Subscriptions — подписки беседы (пусто — приходит всё)
+	Subscriptions(ctx context.Context, conversationId string) ([]*agentModel.Subscription, error)
+	Unsubscribe(ctx context.Context, conversationId string, id int64) error
 }

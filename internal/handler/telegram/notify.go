@@ -17,13 +17,15 @@ import (
 
 	"github.com/mechta-market/pulse_bot/internal/errs"
 	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
+	notifyModel "github.com/mechta-market/pulse_bot/internal/usecase/notify/model"
 	"github.com/mechta-market/pulse_bot/internal/util/tgmd"
 )
 
 // данные кнопок (callback_data, до 64 байт)
 const (
-	cbMute   = "mute"   // mute:<id уведомления>:<срок из muteOptions>
-	cbUnmute = "unmute" // unmute:<id приглушения>
+	cbMute        = "mute"   // mute:<id уведомления>:<срок из muteOptions>
+	cbUnmute      = "unmute" // unmute:<id приглушения>
+	cbUnsubscribe = "unsub"  // unsub:<id подписки>
 )
 
 // muteOptions — кнопки приглушения под уведомлением: код в данных кнопки, срок для агента, подпись.
@@ -84,28 +86,32 @@ func (n *Notifier) deliver(ctx context.Context, chatId int64) {
 	}
 
 	var lastId int64
-	var sent, muted, failed int
+	var delivery notifyModel.Delivery
 	for _, item := range items {
-		if item.MutedBy != nil {
-			muted++
-			lastId = item.Id
-			continue
-		}
-		if err = sendNotification(ctx, n.sender, chatId, item); err != nil {
-			if ctx.Err() != nil {
-				break
+		switch {
+		case item.NotSubscribed:
+			delivery.NotSubscribed++
+		case item.MutedBy != nil:
+			delivery.Muted++
+		default:
+			if err = sendNotification(ctx, n.sender, chatId, item); err != nil {
+				if ctx.Err() == nil {
+					slog.Error("notify: send", "chat_id", chatId, "notification", item.Id, "error", err)
+					delivery.Failed++
+				}
+			} else {
+				delivery.Sent++
 			}
-			slog.Error("notify: send", "chat_id", chatId, "notification", item.Id, "error", err)
-			failed++
-		} else {
-			sent++
+		}
+		if ctx.Err() != nil {
+			break // остановка: неотправленное придёт снова
 		}
 		lastId = item.Id
 	}
 	if lastId == 0 {
 		return
 	}
-	if err = n.notify.Ack(context.WithoutCancel(ctx), chatId, lastId, sent, muted, failed); err != nil {
+	if err = n.notify.Ack(context.WithoutCancel(ctx), chatId, lastId, delivery); err != nil {
 		slog.Warn("notify: ack", "chat_id", chatId, "error", err)
 	}
 }
@@ -184,9 +190,84 @@ func (h *Handler) callback(ctx context.Context, sender SenderI, cq *models.Callb
 		h.answerCallback(ctx, sender, cq, textUnmutedShort)
 		h.sendText(ctx, sender, chat, fmt.Sprintf(textUnmuted, html.EscapeString(lo.CoalesceOrEmpty(name, "кто-то"))))
 
+	case len(parts) == 2 && parts[0] == cbUnsubscribe:
+		id, _ := strconv.ParseInt(parts[1], 10, 64)
+		if err := h.notify.Unsubscribe(ctx, chat, cq.From.ID, id); err != nil {
+			h.answerCallback(ctx, sender, cq, callbackError(err))
+			return
+		}
+		h.answerCallback(ctx, sender, cq, textUnsubscribedShort)
+		h.sendText(ctx, sender, chat, fmt.Sprintf(textUnsubscribed, html.EscapeString(lo.CoalesceOrEmpty(name, "кто-то"))))
+
 	default:
 		h.answerCallback(ctx, sender, cq, textCallbackStale)
 	}
+}
+
+// subscriptions — /subs: что приходит в чат, кнопки «убрать».
+func (h *Handler) subscriptions(ctx context.Context, sender SenderI, msg *models.Message) {
+	if h.notify == nil {
+		h.reply(ctx, sender, msg, textNotifyOff)
+		return
+	}
+	subs, err := h.notify.Subscriptions(ctx, msg.Chat.ID, msg.From.ID)
+	if err != nil {
+		if errors.Is(err, errs.NotAuthorized) {
+			h.reply(ctx, sender, msg, fmt.Sprintf(textDenied, msg.From.ID))
+			return
+		}
+		h.replyError(ctx, sender, msg, err)
+		return
+	}
+	if len(subs) == 0 {
+		h.reply(ctx, sender, msg, textNoSubscriptions)
+		return
+	}
+
+	var b strings.Builder
+	b.WriteString("🔔 <b>В этот чат приходит только</b>\n")
+	for _, sub := range subs {
+		fmt.Fprintf(&b, "• %s", html.EscapeString(subscriptionSubject(sub)))
+		if sub.CreatedBy != "" {
+			fmt.Fprintf(&b, " <i>(%s)</i>", html.EscapeString(sub.CreatedBy))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n" + textSubscriptionsHint)
+
+	buttons := lo.Map(subs, func(sub *agentModel.Subscription, _ int) []models.InlineKeyboardButton {
+		return []models.InlineKeyboardButton{{
+			Text:         "✖ Убрать: " + truncate(subscriptionSubject(sub), 40),
+			CallbackData: fmt.Sprintf("%s:%d", cbUnsubscribe, sub.Id),
+		}}
+	})
+	_, err = sender.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:          msg.Chat.ID,
+		Text:            b.String(),
+		ParseMode:       models.ParseModeHTML,
+		ReplyParameters: &models.ReplyParameters{MessageID: msg.ID, AllowSendingWithoutReply: true},
+		ReplyMarkup:     &models.InlineKeyboardMarkup{InlineKeyboard: buttons},
+	})
+	if err != nil {
+		slog.Error("telegram: send subscriptions", "chat_id", msg.Chat.ID, "error", err)
+	}
+}
+
+var severityLabels = map[string]string{"info": "любой важности", "warning": "warning и выше", "critical": "только critical"}
+
+// subscriptionSubject — «caravan», «все сервисы · алерты · только critical».
+func subscriptionSubject(sub *agentModel.Subscription) string {
+	parts := []string{lo.CoalesceOrEmpty(sub.Service, "все сервисы")}
+	switch sub.Kind {
+	case "alert":
+		parts = append(parts, "алерты")
+	case "deploy":
+		parts = append(parts, "выкатки")
+	}
+	if sub.MinSeverity != "" && sub.MinSeverity != "info" {
+		parts = append(parts, severityLabels[sub.MinSeverity])
+	}
+	return strings.Join(parts, " · ")
 }
 
 // muted — /muted: что приглушено в чате, что скрыто, кнопки «вернуть».

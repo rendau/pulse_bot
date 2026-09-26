@@ -15,6 +15,7 @@ import (
 	"github.com/mechta-market/pulse_bot/internal/errs"
 	"github.com/mechta-market/pulse_bot/internal/infra/metrics"
 	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
+	"github.com/mechta-market/pulse_bot/internal/usecase/notify/model"
 )
 
 const (
@@ -29,7 +30,7 @@ var metricNotifications *prometheus.CounterVec
 func init() {
 	metricNotifications = metrics.Factory.NewCounterVec(prometheus.CounterOpts{
 		Name: "notification_total",
-		Help: "Уведомления агента по исходу: sent, muted, failed.",
+		Help: "Уведомления агента по исходу: sent, muted, not_subscribed, failed.",
 	}, []string{"outcome"})
 }
 
@@ -83,11 +84,12 @@ func (u *Usecase) Pending(ctx context.Context, chatId int64) ([]*agentModel.Noti
 	return items, nil
 }
 
-// Ack — чат получил уведомления до lastId; sent и muted — для метрик.
-func (u *Usecase) Ack(ctx context.Context, chatId, lastId int64, sent, muted, failed int) error {
-	metricNotifications.WithLabelValues("sent").Add(float64(sent))
-	metricNotifications.WithLabelValues("muted").Add(float64(muted))
-	metricNotifications.WithLabelValues("failed").Add(float64(failed))
+// Ack — чат получил уведомления до lastId; delivery — что с ними стало (метрики).
+func (u *Usecase) Ack(ctx context.Context, chatId, lastId int64, delivery model.Delivery) error {
+	metricNotifications.WithLabelValues("sent").Add(float64(delivery.Sent))
+	metricNotifications.WithLabelValues("muted").Add(float64(delivery.Muted))
+	metricNotifications.WithLabelValues("not_subscribed").Add(float64(delivery.NotSubscribed))
+	metricNotifications.WithLabelValues("failed").Add(float64(delivery.Failed))
 	if err := u.agent.Ack(ctx, constant.ConversationId(chatId), lastId); err != nil {
 		return fmt.Errorf("agent.Ack: %w", err)
 	}
@@ -131,4 +133,27 @@ func (u *Usecase) Mutes(ctx context.Context, chatId, userId int64) ([]*agentMode
 		return nil, nil, fmt.Errorf("agent.Mutes: %w", err)
 	}
 	return mutes, muted, nil
+}
+
+// Subscriptions — подписки чата (пусто — приходит всё). Ошибки: errs.NotAuthorized.
+func (u *Usecase) Subscriptions(ctx context.Context, chatId, userId int64) ([]*agentModel.Subscription, error) {
+	if !u.CanManage(chatId, userId) {
+		return nil, errs.NotAuthorized
+	}
+	subs, err := u.agent.Subscriptions(ctx, constant.ConversationId(chatId))
+	if err != nil {
+		return nil, fmt.Errorf("agent.Subscriptions: %w", err)
+	}
+	return subs, nil
+}
+
+// Unsubscribe — убрать подписку чата. Ошибки: errs.NotAuthorized, errs.ObjectNotFound.
+func (u *Usecase) Unsubscribe(ctx context.Context, chatId, userId, id int64) error {
+	if !u.CanManage(chatId, userId) {
+		return errs.NotAuthorized
+	}
+	if err := u.agent.Unsubscribe(ctx, constant.ConversationId(chatId), id); err != nil {
+		return fmt.Errorf("agent.Unsubscribe: %w", err)
+	}
+	return nil
 }

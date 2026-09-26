@@ -49,7 +49,7 @@ var keyboard = &models.ReplyKeyboardMarkup{
 }
 
 // Handler — транспорт Telegram: отвечает в личных чатах; в группах уведомлений — только на
-// /muted и на ответы на сообщения бота; кнопки приглушения под уведомлениями. Сообщения
+// /muted, /subs и на ответы на сообщения бота; кнопки приглушения под уведомлениями. Сообщения
 // обрабатываются параллельно (разные чаты не ждут друг друга); Wait дожидается незаконченных
 // при остановке.
 type Handler struct {
@@ -83,7 +83,8 @@ func (h *Handler) Handle(ctx context.Context, b *bot.Bot, update *models.Update)
 		if h.notify == nil || !h.notify.NotifyChat(msg.Chat.ID) {
 			return
 		}
-		if !isCommand(strings.TrimSpace(msg.Text), "/muted") && h.repliedTo(msg) == "" {
+		text := strings.TrimSpace(msg.Text)
+		if !isCommand(text, "/muted") && !isCommand(text, "/subs") && h.repliedTo(msg) == "" {
 			return
 		}
 	}
@@ -124,6 +125,9 @@ func (h *Handler) process(ctx context.Context, sender SenderI, msg *models.Messa
 		return
 	case isCommand(text, "/muted"):
 		h.muted(ctx, sender, msg)
+		return
+	case isCommand(text, "/subs"):
+		h.subscriptions(ctx, sender, msg)
 		return
 	case isCommand(text, "/eval"):
 		h.eval(ctx, sender, msg, userId, strings.Fields(text)[1:])

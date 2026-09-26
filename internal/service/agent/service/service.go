@@ -28,6 +28,7 @@ const (
 	notificationsPath = "/v1/notifications"
 	ackPath           = "/v1/notifications/ack"
 	mutesPath         = "/v1/mutes"
+	subscriptionsPath = "/v1/subscriptions"
 
 	maxBodyBytes = 16 << 20 // ответ с тремя графиками в base64 — сотни КБ
 )
@@ -118,6 +119,22 @@ func (s *Service) Mutes(ctx context.Context, conversationId string, mutedLimit i
 		return nil, nil, err
 	}
 	return lo.Map(rep.Mutes, decodeMute), lo.Map(rep.Muted, decodeNotification), nil
+}
+
+func (s *Service) Subscriptions(ctx context.Context, conversationId string) ([]*agentModel.Subscription, error) {
+	rep := &subscriptionsRep{}
+	q := url.Values{"conversation_id": {conversationId}}
+	if err := s.sendRequest(ctx, http.MethodGet, subscriptionsPath+"?"+q.Encode(), nil, rep); err != nil {
+		return nil, err
+	}
+	return lo.Map(rep.Subscriptions, func(v subscriptionRep, _ int) *agentModel.Subscription {
+		return &agentModel.Subscription{Id: v.Id, Service: v.Service, Kind: v.Kind, MinSeverity: v.MinSeverity, Note: v.Note, CreatedBy: v.CreatedBy}
+	}), nil
+}
+
+func (s *Service) Unsubscribe(ctx context.Context, conversationId string, id int64) error {
+	q := url.Values{"conversation_id": {conversationId}}
+	return s.sendRequest(ctx, http.MethodDelete, subscriptionsPath+"/"+strconv.FormatInt(id, 10)+"?"+q.Encode(), nil, &struct{}{})
 }
 
 // sendRequest — единственная точка отправки: JSON, ключ, коды ошибок API → errs.
@@ -223,16 +240,30 @@ type errorRep struct {
 }
 
 type notificationRep struct {
-	Id           int64     `json:"id"`
-	At           time.Time `json:"at"`
-	Kind         string    `json:"kind"`
-	Service      string    `json:"service"`
-	Key          string    `json:"key"`
-	Severity     string    `json:"severity"`
-	Title        string    `json:"title"`
-	Text         string    `json:"text"`
-	Investigated bool      `json:"investigated"`
-	MutedBy      *int64    `json:"muted_by"`
+	Id            int64     `json:"id"`
+	At            time.Time `json:"at"`
+	Kind          string    `json:"kind"`
+	Service       string    `json:"service"`
+	Key           string    `json:"key"`
+	Severity      string    `json:"severity"`
+	Title         string    `json:"title"`
+	Text          string    `json:"text"`
+	Investigated  bool      `json:"investigated"`
+	MutedBy       *int64    `json:"muted_by"`
+	NotSubscribed bool      `json:"not_subscribed"`
+}
+
+type subscriptionRep struct {
+	Id          int64  `json:"id"`
+	Service     string `json:"service"`
+	Kind        string `json:"kind"`
+	MinSeverity string `json:"min_severity"`
+	Note        string `json:"note"`
+	CreatedBy   string `json:"created_by"`
+}
+
+type subscriptionsRep struct {
+	Subscriptions []subscriptionRep `json:"subscriptions"`
 }
 
 type notificationsRep struct {
@@ -270,7 +301,7 @@ type mutesRep struct {
 func decodeNotification(v notificationRep, _ int) *agentModel.Notification {
 	return &agentModel.Notification{
 		Id: v.Id, At: v.At, Kind: v.Kind, Service: v.Service, Key: v.Key, Severity: v.Severity,
-		Title: v.Title, Text: v.Text, Investigated: v.Investigated, MutedBy: v.MutedBy,
+		Title: v.Title, Text: v.Text, Investigated: v.Investigated, MutedBy: v.MutedBy, NotSubscribed: v.NotSubscribed,
 	}
 }
 
