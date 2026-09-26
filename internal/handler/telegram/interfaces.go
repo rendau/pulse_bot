@@ -12,9 +12,9 @@ import (
 )
 
 type ChatUsecaseI interface {
-	Allowed(userId int64) bool
+	Allowed(chatId int64) bool
 	Ask(ctx context.Context, q *chatModel.Question) (*chatModel.Answer, error)
-	Reset(ctx context.Context, chatId, userId int64) error
+	Reset(ctx context.Context, chatId int64) error
 	Admin(userId int64) bool
 	Eval(ctx context.Context, userId int64, only []string) (string, error)
 }
@@ -22,15 +22,14 @@ type ChatUsecaseI interface {
 // NotifyUsecaseI — уведомления агента в чатах: лента, подтверждение, приглушения.
 type NotifyUsecaseI interface {
 	Chats() []int64
-	NotifyChat(chatId int64) bool
-	CanManage(chatId, userId int64) bool
+	CanManage(chatId int64) bool
 	Pending(ctx context.Context, chatId int64) ([]*agentModel.Notification, error)
 	Ack(ctx context.Context, chatId, lastId int64, delivery notifyModel.Delivery) error
 	Mute(ctx context.Context, chatId, userId int64, userName string, notificationId int64, duration string) (*agentModel.Mute, error)
-	Unmute(ctx context.Context, chatId, userId, muteId int64) error
-	Mutes(ctx context.Context, chatId, userId int64) ([]*agentModel.Mute, []*agentModel.Notification, error)
-	Subscriptions(ctx context.Context, chatId, userId int64) ([]*agentModel.Subscription, error)
-	Unsubscribe(ctx context.Context, chatId, userId, id int64) error
+	Unmute(ctx context.Context, chatId, muteId int64) error
+	Mutes(ctx context.Context, chatId int64) ([]*agentModel.Mute, []*agentModel.Notification, error)
+	Subscriptions(ctx context.Context, chatId int64) ([]*agentModel.Subscription, error)
+	Unsubscribe(ctx context.Context, chatId, id int64) error
 }
 
 // SenderI — методы Bot API, которыми отвечает бот (реализует *bot.Bot).

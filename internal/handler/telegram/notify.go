@@ -183,7 +183,7 @@ func (h *Handler) callback(ctx context.Context, sender SenderI, cq *models.Callb
 
 	case len(parts) == 2 && parts[0] == cbUnmute:
 		id, _ := strconv.ParseInt(parts[1], 10, 64)
-		if err := h.notify.Unmute(ctx, chat, cq.From.ID, id); err != nil {
+		if err := h.notify.Unmute(ctx, chat, id); err != nil {
 			h.answerCallback(ctx, sender, cq, callbackError(err))
 			return
 		}
@@ -192,7 +192,7 @@ func (h *Handler) callback(ctx context.Context, sender SenderI, cq *models.Callb
 
 	case len(parts) == 2 && parts[0] == cbUnsubscribe:
 		id, _ := strconv.ParseInt(parts[1], 10, 64)
-		if err := h.notify.Unsubscribe(ctx, chat, cq.From.ID, id); err != nil {
+		if err := h.notify.Unsubscribe(ctx, chat, id); err != nil {
 			h.answerCallback(ctx, sender, cq, callbackError(err))
 			return
 		}
@@ -210,7 +210,7 @@ func (h *Handler) subscriptions(ctx context.Context, sender SenderI, msg *models
 		h.reply(ctx, sender, msg, textNotifyOff)
 		return
 	}
-	subs, err := h.notify.Subscriptions(ctx, msg.Chat.ID, msg.From.ID)
+	subs, err := h.notify.Subscriptions(ctx, msg.Chat.ID)
 	if err != nil {
 		if errors.Is(err, errs.NotAuthorized) {
 			h.reply(ctx, sender, msg, fmt.Sprintf(textDenied, msg.From.ID))
@@ -225,7 +225,7 @@ func (h *Handler) subscriptions(ctx context.Context, sender SenderI, msg *models
 	}
 
 	var b strings.Builder
-	b.WriteString("🔔 <b>В этот чат приходит только</b>\n")
+	b.WriteString("🔔 <b>В этот чат приходит</b>\n")
 	for _, sub := range subs {
 		fmt.Fprintf(&b, "• %s", html.EscapeString(subscriptionSubject(sub)))
 		if sub.CreatedBy != "" {
@@ -276,7 +276,7 @@ func (h *Handler) muted(ctx context.Context, sender SenderI, msg *models.Message
 		h.reply(ctx, sender, msg, textNotifyOff)
 		return
 	}
-	mutes, muted, err := h.notify.Mutes(ctx, msg.Chat.ID, msg.From.ID)
+	mutes, muted, err := h.notify.Mutes(ctx, msg.Chat.ID)
 	if err != nil {
 		if errors.Is(err, errs.NotAuthorized) {
 			h.reply(ctx, sender, msg, fmt.Sprintf(textDenied, msg.From.ID))

@@ -11,12 +11,12 @@ import (
 )
 
 func TestCanManage(t *testing.T) {
-	u := New(Config{Chats: []int64{-100, -100, 7}, AllowedUsers: []int64{42}}, nil)
+	u := New(Config{AllowedChats: []int64{-100, -100, 42}}, nil)
 
-	assert.Equal(t, []int64{-100, 7}, u.Chats())
-	assert.True(t, u.CanManage(-100, 999), "в группе уведомлений — любой участник")
-	assert.True(t, u.CanManage(42, 42), "в личке — из белого списка")
-	assert.False(t, u.CanManage(999, 999))
+	assert.Equal(t, []int64{-100, 42}, u.Chats())
+	assert.True(t, u.CanManage(-100), "разрешённая группа — любой участник")
+	assert.True(t, u.CanManage(42))
+	assert.False(t, u.CanManage(999))
 
 	_, err := u.Mute(context.Background(), 999, 999, "", 1, "")
 	require.ErrorIs(t, err, errs.NotAuthorized)

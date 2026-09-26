@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -48,19 +49,27 @@ var keyboard = &models.ReplyKeyboardMarkup{
 	ResizeKeyboard: true,
 }
 
-// Handler — транспорт Telegram: отвечает в личных чатах; в группах уведомлений — только на
-// /muted, /subs и на ответы на сообщения бота; кнопки приглушения под уведомлениями. Сообщения
+// Handler — транспорт Telegram: отвечает в разрешённых чатах; в группе — на команды, упоминание
+// бота и ответы на его сообщения (остальную переписку группы бот не видит — режим приватности); кнопки приглушения под уведомлениями. Сообщения
 // обрабатываются параллельно (разные чаты не ждут друг друга); Wait дожидается незаконченных
 // при остановке.
 type Handler struct {
 	chat   ChatUsecaseI
 	notify NotifyUsecaseI // nil — уведомления не настроены
 	botId  int64          // свои сообщения: ответ на них в группе — вопрос боту
-	wg     sync.WaitGroup
+	// botMention — «@имя_бота» в нижнем регистре, mentionRe — оно же в тексте: упоминание в
+	// группе — вопрос боту
+	botMention string
+	mentionRe  *regexp.Regexp
+	wg         sync.WaitGroup
 }
 
-func New(chat ChatUsecaseI, notify NotifyUsecaseI, botId int64) *Handler {
-	return &Handler{chat: chat, notify: notify, botId: botId}
+func New(chat ChatUsecaseI, notify NotifyUsecaseI, botId int64, botUsername string) *Handler {
+	mention := "@" + strings.ToLower(botUsername)
+	return &Handler{
+		chat: chat, notify: notify, botId: botId,
+		botMention: mention, mentionRe: regexp.MustCompile(`(?i)` + regexp.QuoteMeta(mention) + `\b`),
+	}
 }
 
 // Handle — обработчик обновлений для bot.WithDefaultHandler (с WithNotAsyncHandlers:
@@ -78,13 +87,10 @@ func (h *Handler) Handle(ctx context.Context, b *bot.Bot, update *models.Update)
 		return
 	}
 
-	// в группах бот молчит, кроме групп уведомлений: там — /muted и ответы на его сообщения
+	// в группе: только разрешённая, и только обращения к боту — команда (без @ или с нашим @),
+	// упоминание, ответ на его сообщение
 	if msg.Chat.Type != models.ChatTypePrivate {
-		if h.notify == nil || !h.notify.NotifyChat(msg.Chat.ID) {
-			return
-		}
-		text := strings.TrimSpace(msg.Text)
-		if !isCommand(text, "/muted") && !isCommand(text, "/subs") && h.repliedTo(msg) == "" {
+		if !h.chat.Allowed(msg.Chat.ID) || !h.addressed(msg) {
 			return
 		}
 	}
@@ -92,6 +98,22 @@ func (h *Handler) Handle(ctx context.Context, b *bot.Bot, update *models.Update)
 	h.wg.Go(func() {
 		h.process(ctx, b, msg)
 	})
+}
+
+// addressed — сообщение в группе обращено к боту.
+func (h *Handler) addressed(msg *models.Message) bool {
+	text := strings.TrimSpace(msg.Text)
+	if strings.HasPrefix(text, "/") {
+		head, _, _ := strings.Cut(text, " ")
+		_, to, ok := strings.Cut(head, "@")
+		return !ok || "@"+strings.ToLower(to) == h.botMention
+	}
+	return h.repliedTo(msg) != "" || h.mentioned(text)
+}
+
+// mentioned — в тексте есть упоминание бота.
+func (h *Handler) mentioned(text string) bool {
+	return h.botMention != "@" && h.mentionRe.MatchString(text)
 }
 
 // repliedTo — текст сообщения бота, на которое ответили (пусто — не ответ боту).
@@ -111,13 +133,16 @@ func (h *Handler) Wait() {
 func (h *Handler) process(ctx context.Context, sender SenderI, msg *models.Message) {
 	chatId, userId := msg.Chat.ID, msg.From.ID
 	text := strings.TrimSpace(msg.Text)
+	if h.mentioned(text) {
+		text = strings.TrimSpace(h.mentionRe.ReplaceAllString(text, ""))
+	}
 
 	switch {
 	case text == "":
 		h.reply(ctx, sender, msg, textNotText)
 		return
 	case isCommand(text, "/start"), isCommand(text, "/help"):
-		if !h.chat.Allowed(userId) {
+		if !h.chat.Allowed(chatId) {
 			h.reply(ctx, sender, msg, fmt.Sprintf(textDenied, userId))
 			return
 		}
@@ -133,7 +158,7 @@ func (h *Handler) process(ctx context.Context, sender SenderI, msg *models.Messa
 		h.eval(ctx, sender, msg, userId, strings.Fields(text)[1:])
 		return
 	case isCommand(text, "/reset"), text == buttonReset:
-		if err := h.chat.Reset(ctx, chatId, userId); err != nil {
+		if err := h.chat.Reset(ctx, chatId); err != nil {
 			h.replyError(ctx, sender, msg, err)
 			return
 		}
@@ -258,7 +283,7 @@ func (h *Handler) sendAnswer(ctx context.Context, sender SenderI, msg *models.Me
 		}
 		if i == 0 {
 			params.ReplyParameters = &models.ReplyParameters{MessageID: msg.ID, AllowSendingWithoutReply: true}
-			params.ReplyMarkup = keyboard
+			params.ReplyMarkup = privateKeyboard(msg)
 		}
 
 		if _, err := sender.SendMessage(ctx, params); err != nil {
@@ -312,9 +337,17 @@ func (h *Handler) reply(ctx context.Context, sender SenderI, msg *models.Message
 	h.send(ctx, sender, msg, text, nil)
 }
 
-// replyWithKeyboard — reply с кнопкой сброса.
+// replyWithKeyboard — reply с кнопкой сброса (в группе — без неё: клавиатура появилась бы у всех).
 func (h *Handler) replyWithKeyboard(ctx context.Context, sender SenderI, msg *models.Message, text string) {
-	h.send(ctx, sender, msg, text, keyboard)
+	h.send(ctx, sender, msg, text, privateKeyboard(msg))
+}
+
+// privateKeyboard — кнопка сброса только в личном чате.
+func privateKeyboard(msg *models.Message) models.ReplyMarkup {
+	if msg.Chat.Type != models.ChatTypePrivate {
+		return nil
+	}
+	return keyboard
 }
 
 func (h *Handler) send(ctx context.Context, sender SenderI, msg *models.Message, text string, markup models.ReplyMarkup) {

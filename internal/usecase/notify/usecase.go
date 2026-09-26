@@ -1,6 +1,6 @@
-// Package notify — уведомления агента в чатах Telegram: какие чаты получают ленту
-// (NOTIFY_CHAT_IDS), кто может приглушать, лента и подтверждение доставки, приглушения. Лента,
-// приглушения и курсор чата хранит агент (беседа — constant.ConversationId).
+// Package notify — уведомления агента в чатах Telegram: лента разрешённых чатов (что приходит —
+// по подпискам чата; без них — ничего), подтверждение доставки, подписки и приглушения. Лента,
+// настройки и курсор чата хранит агент (беседа — constant.ConversationId).
 package notify
 
 import (
@@ -35,44 +35,33 @@ func init() {
 }
 
 type Config struct {
-	// Chats — чаты, которые получают уведомления: там любой участник может приглушать
-	Chats []int64
-	// AllowedUsers — в личке управлять приглушениями могут только они
-	AllowedUsers []int64
+	// AllowedChats — разрешённые чаты: читают ленту и настраивают уведомления (в группе — любой участник)
+	AllowedChats []int64
 }
 
 type Usecase struct {
 	chats   []int64
-	notify  map[int64]struct{}
 	allowed map[int64]struct{}
 	agent   AgentI
 }
 
 func New(cfg Config, agent AgentI) *Usecase {
 	return &Usecase{
-		chats:   lo.Uniq(cfg.Chats),
-		notify:  lo.SliceToMap(cfg.Chats, func(id int64) (int64, struct{}) { return id, struct{}{} }),
-		allowed: lo.SliceToMap(cfg.AllowedUsers, func(id int64) (int64, struct{}) { return id, struct{}{} }),
+		chats:   lo.Uniq(cfg.AllowedChats),
+		allowed: lo.SliceToMap(cfg.AllowedChats, func(id int64) (int64, struct{}) { return id, struct{}{} }),
 		agent:   agent,
 	}
 }
 
-// Chats — чаты уведомлений.
+// Chats — чаты, чью ленту забирать (разрешённые; что им приходит — по их подпискам).
 func (u *Usecase) Chats() []int64 {
 	return u.chats
 }
 
-// NotifyChat — чат получает уведомления.
-func (u *Usecase) NotifyChat(chatId int64) bool {
-	_, ok := u.notify[chatId]
+// CanManage — можно ли в чате менять настройки уведомлений: разрешённый чат, любой участник.
+func (u *Usecase) CanManage(chatId int64) bool {
+	_, ok := u.allowed[chatId]
 	return ok
-}
-
-// CanManage — может ли пользователь управлять приглушениями чата: в чате уведомлений — любой
-// участник, иначе — пользователь из белого списка.
-func (u *Usecase) CanManage(chatId, userId int64) bool {
-	_, allowed := u.allowed[userId]
-	return u.NotifyChat(chatId) || allowed
 }
 
 // Pending — новые уведомления чата (и приглушённые — у них MutedBy); подтверждать — Ack.
@@ -99,7 +88,7 @@ func (u *Usecase) Ack(ctx context.Context, chatId, lastId int64, delivery model.
 // Mute — приглушить в чате сервис уведомления на duration (1h, 1d; пусто — навсегда). Ошибки:
 // errs.NotAuthorized — пользователю нельзя.
 func (u *Usecase) Mute(ctx context.Context, chatId, userId int64, userName string, notificationId int64, duration string) (*agentModel.Mute, error) {
-	if !u.CanManage(chatId, userId) {
+	if !u.CanManage(chatId) {
 		return nil, errs.NotAuthorized
 	}
 	m, err := u.agent.Mute(ctx, &agentModel.MuteReq{
@@ -113,8 +102,8 @@ func (u *Usecase) Mute(ctx context.Context, chatId, userId int64, userName strin
 }
 
 // Unmute — снять приглушение чата. Ошибки: errs.NotAuthorized, errs.ObjectNotFound.
-func (u *Usecase) Unmute(ctx context.Context, chatId, userId, muteId int64) error {
-	if !u.CanManage(chatId, userId) {
+func (u *Usecase) Unmute(ctx context.Context, chatId, muteId int64) error {
+	if !u.CanManage(chatId) {
 		return errs.NotAuthorized
 	}
 	if err := u.agent.Unmute(ctx, constant.ConversationId(chatId), muteId); err != nil {
@@ -124,8 +113,8 @@ func (u *Usecase) Unmute(ctx context.Context, chatId, userId, muteId int64) erro
 }
 
 // Mutes — приглушения чата и последние скрытые уведомления. Ошибки: errs.NotAuthorized.
-func (u *Usecase) Mutes(ctx context.Context, chatId, userId int64) ([]*agentModel.Mute, []*agentModel.Notification, error) {
-	if !u.CanManage(chatId, userId) {
+func (u *Usecase) Mutes(ctx context.Context, chatId int64) ([]*agentModel.Mute, []*agentModel.Notification, error) {
+	if !u.CanManage(chatId) {
 		return nil, nil, errs.NotAuthorized
 	}
 	mutes, muted, err := u.agent.Mutes(ctx, constant.ConversationId(chatId), mutedShown)
@@ -135,9 +124,9 @@ func (u *Usecase) Mutes(ctx context.Context, chatId, userId int64) ([]*agentMode
 	return mutes, muted, nil
 }
 
-// Subscriptions — подписки чата (пусто — приходит всё). Ошибки: errs.NotAuthorized.
-func (u *Usecase) Subscriptions(ctx context.Context, chatId, userId int64) ([]*agentModel.Subscription, error) {
-	if !u.CanManage(chatId, userId) {
+// Subscriptions — подписки чата (пусто — уведомления не приходят). Ошибки: errs.NotAuthorized.
+func (u *Usecase) Subscriptions(ctx context.Context, chatId int64) ([]*agentModel.Subscription, error) {
+	if !u.CanManage(chatId) {
 		return nil, errs.NotAuthorized
 	}
 	subs, err := u.agent.Subscriptions(ctx, constant.ConversationId(chatId))
@@ -148,8 +137,8 @@ func (u *Usecase) Subscriptions(ctx context.Context, chatId, userId int64) ([]*a
 }
 
 // Unsubscribe — убрать подписку чата. Ошибки: errs.NotAuthorized, errs.ObjectNotFound.
-func (u *Usecase) Unsubscribe(ctx context.Context, chatId, userId, id int64) error {
-	if !u.CanManage(chatId, userId) {
+func (u *Usecase) Unsubscribe(ctx context.Context, chatId, id int64) error {
+	if !u.CanManage(chatId) {
 		return errs.NotAuthorized
 	}
 	if err := u.agent.Unsubscribe(ctx, constant.ConversationId(chatId), id); err != nil {

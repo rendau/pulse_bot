@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+	"github.com/samber/lo"
 
 	"github.com/mechta-market/pulse_bot/internal/config"
 	"github.com/mechta-market/pulse_bot/internal/constant"
@@ -35,7 +37,7 @@ type App struct {
 	telegramBot     *bot.Bot
 	telegramHandler *handlerTelegramP.Handler
 	telegramWg      sync.WaitGroup
-	notifier        *handlerTelegramP.Notifier // nil — NOTIFY_CHAT_IDS пуст
+	notifier        *handlerTelegramP.Notifier
 
 	systemHttpServer *http.Server
 
@@ -64,27 +66,21 @@ func (a *App) Init() {
 	)
 
 	// chat
+	// разрешённые чаты: из списка и личные чаты админов
+	allowedChats := lo.Uniq(append(slices.Clone(config.Conf.TelegramAllowedChatIds), config.Conf.TelegramAdminUsers...))
+	if len(allowedChats) == 0 {
+		slog.Warn("TELEGRAM_ALLOWED_CHAT_IDS and TELEGRAM_ADMIN_USERS are empty: bot will deny everyone")
+	}
+
 	chatUsecase := usecaseChatP.New(usecaseChatP.Config{
-		AllowedUsers: config.Conf.TelegramAllowedUsers,
+		AllowedChats: allowedChats,
 		AdminUsers:   config.Conf.TelegramAdminUsers,
-		NotifyChats:  config.Conf.NotifyChatIds,
 		AskTimeout:   config.Conf.AgentTimeout,
 		EvalTimeout:  config.Conf.AgentEvalTimeout,
 	}, agentService)
-	if len(config.Conf.TelegramAllowedUsers) == 0 {
-		slog.Warn("TELEGRAM_ALLOWED_USERS is empty: bot will deny everyone")
-	}
 
-	// notify (уведомления агента в чатах NOTIFY_CHAT_IDS)
-	var notifyUsecase handlerTelegramP.NotifyUsecaseI
-	if len(config.Conf.NotifyChatIds) > 0 {
-		notifyUsecase = usecaseNotifyP.New(usecaseNotifyP.Config{
-			Chats:        config.Conf.NotifyChatIds,
-			AllowedUsers: config.Conf.TelegramAllowedUsers,
-		}, agentService)
-	} else {
-		slog.Warn("NOTIFY_CHAT_IDS is empty: agent notifications are not delivered")
-	}
+	// notify (уведомления агента: разрешённые чаты, что приходит — по их подпискам)
+	notifyUsecase := usecaseNotifyP.New(usecaseNotifyP.Config{AllowedChats: allowedChats}, agentService)
 
 	// telegram
 	{
@@ -108,10 +104,18 @@ func (a *App) Init() {
 		)
 		errCheck(err, "telegram bot init")
 
-		a.telegramHandler = handlerTelegramP.New(chatUsecase, notifyUsecase, a.telegramBot.ID())
-		if notifyUsecase != nil {
-			a.notifier = handlerTelegramP.NewNotifier(notifyUsecase, a.telegramBot, config.Conf.NotifyPollInterval)
+		// имя бота — для упоминаний в группах; не узнали — в группах отвечаем на команды и ответы
+		username := ""
+		meCtx, meCancel := context.WithTimeout(a.ctx, 10*time.Second)
+		if me, meErr := a.telegramBot.GetMe(meCtx); meErr != nil {
+			slog.Warn("telegram getMe: mentions in groups are off", "error", meErr)
+		} else {
+			username = me.Username
 		}
+		meCancel()
+
+		a.telegramHandler = handlerTelegramP.New(chatUsecase, notifyUsecase, a.telegramBot.ID(), username)
+		a.notifier = handlerTelegramP.NewNotifier(notifyUsecase, a.telegramBot, config.Conf.NotifyPollInterval)
 	}
 
 	// system http server (healthcheck, docs, metrics)
@@ -136,9 +140,7 @@ func (a *App) Start() {
 	}
 
 	// notifier (лента уведомлений агента)
-	if a.notifier != nil {
-		a.notifier.Start(a.ctx)
-	}
+	a.notifier.Start(a.ctx)
 
 	// system http server
 	{
@@ -186,9 +188,7 @@ func (a *App) WaitJobs() {
 	a.telegramHandler.Wait()
 
 	// notifier
-	if a.notifier != nil {
-		a.notifier.Wait()
-	}
+	a.notifier.Wait()
 }
 
 func (a *App) Exit() {

@@ -14,17 +14,15 @@ var Conf = struct {
 
 	SystemHttpPort string `env:"SYSTEM_HTTP_PORT" envDefault:"3003"` // healthcheck, metrics, docs
 
-	// telegram: long polling; отвечаем только пользователям из белого списка (user ID через запятую)
-	TelegramBotToken     string  `env:"TELEGRAM_BOT_TOKEN,required"`
-	TelegramAllowedUsers []int64 `env:"TELEGRAM_ALLOWED_USERS" envSeparator:","`
-	// админы: команда /eval (прогон эталонных вопросов агента)
+	// telegram: long polling. Разрешённые чаты через запятую: личные — ID человека, группы — с
+	// минусом. В разрешённом чате можно спрашивать, настраивать уведомления (по подписке, без неё —
+	// не приходят) и заметки чата; в группе — любой участник
+	TelegramBotToken       string  `env:"TELEGRAM_BOT_TOKEN,required"`
+	TelegramAllowedChatIds []int64 `env:"TELEGRAM_ALLOWED_CHAT_IDS" envSeparator:","`
+	// админы (user ID): команда /eval; их личные чаты разрешены автоматически
 	TelegramAdminUsers []int64 `env:"TELEGRAM_ADMIN_USERS" envSeparator:","`
 
-	// уведомления агента (проактивный режим): чаты Telegram через запятую (группы — с минусом,
-	// личные — user ID), куда присылать ленту агента; пусто — не присылать. В этих чатах любой
-	// участник может приглушать уведомления и спрашивать бота ответом на его сообщение.
-	NotifyChatIds []int64 `env:"NOTIFY_CHAT_IDS" envSeparator:","`
-	// как часто забирать ленту у агента
+	// как часто забирать у агента ленту уведомлений разрешённых чатов
 	NotifyPollInterval time.Duration `env:"NOTIFY_POLL_INTERVAL" envDefault:"20s"`
 
 	// pulse_agent: разбор вопроса, история бесед и графики — там; ключ — бота в API_KEYS агента

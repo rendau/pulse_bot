@@ -40,9 +40,8 @@ func init() {
 
 // Config — доступ к боту.
 type Config struct {
-	AllowedUsers []int64
-	// NotifyChats — чаты уведомлений: там спрашивать может любой участник (группа команды)
-	NotifyChats []int64
+	// AllowedChats — разрешённые чаты (личные — ID человека, группы — с минусом), админы — уже в них
+	AllowedChats []int64
 	// AdminUsers — кому можно /eval
 	AdminUsers []int64
 	// AskTimeout, EvalTimeout — сколько ждать ответ агента и прогон эталонов
@@ -54,7 +53,6 @@ type Usecase struct {
 	cfg     Config
 	allowed map[int64]struct{}
 	admins  map[int64]struct{}
-	notify  map[int64]struct{}
 	agent   AgentI
 
 	mu   sync.Mutex
@@ -64,25 +62,24 @@ type Usecase struct {
 func New(cfg Config, agent AgentI) *Usecase {
 	return &Usecase{
 		cfg:     cfg,
-		allowed: lo.SliceToMap(cfg.AllowedUsers, func(id int64) (int64, struct{}) { return id, struct{}{} }),
+		allowed: lo.SliceToMap(cfg.AllowedChats, func(id int64) (int64, struct{}) { return id, struct{}{} }),
 		admins:  lo.SliceToMap(cfg.AdminUsers, func(id int64) (int64, struct{}) { return id, struct{}{} }),
-		notify:  lo.SliceToMap(cfg.NotifyChats, func(id int64) (int64, struct{}) { return id, struct{}{} }),
 		agent:   agent,
 		busy:    map[int64]struct{}{},
 	}
 }
 
-// Allowed — есть ли пользователь в белом списке.
-func (u *Usecase) Allowed(userId int64) bool {
-	_, ok := u.allowed[userId]
+// Allowed — разрешён ли чат.
+func (u *Usecase) Allowed(chatId int64) bool {
+	_, ok := u.allowed[chatId]
 	return ok
 }
 
 // Ask разбирает вопрос (разбор и история беседы — в pulse_agent). Ошибки:
-// errs.NotAuthorized — пользователя нет в белом списке и чат не из чатов уведомлений;
-// errs.Busy — в чате уже идёт разбор; errs.InvalidRequest — пустой вопрос.
+// errs.NotAuthorized — чат не разрешён; errs.Busy — в чате уже идёт разбор;
+// errs.InvalidRequest — пустой вопрос.
 func (u *Usecase) Ask(ctx context.Context, q *model.Question) (*model.Answer, error) {
-	if _, notifyChat := u.notify[q.ChatId]; !u.Allowed(q.UserId) && !notifyChat {
+	if !u.Allowed(q.ChatId) {
 		metricQuestions.WithLabelValues(constant.OutcomeDenied).Inc()
 		return nil, errs.NotAuthorized
 	}
@@ -150,8 +147,8 @@ func (u *Usecase) Eval(ctx context.Context, userId int64, only []string) (string
 }
 
 // Reset забывает историю чата (в агенте).
-func (u *Usecase) Reset(ctx context.Context, chatId, userId int64) error {
-	if !u.Allowed(userId) {
+func (u *Usecase) Reset(ctx context.Context, chatId int64) error {
+	if !u.Allowed(chatId) {
 		return errs.NotAuthorized
 	}
 

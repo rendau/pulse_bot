@@ -29,18 +29,17 @@ type fakeNotify struct {
 	unsubscribed []int64
 }
 
-func (f *fakeNotify) Subscriptions(context.Context, int64, int64) ([]*agentModel.Subscription, error) {
+func (f *fakeNotify) Subscriptions(context.Context, int64) ([]*agentModel.Subscription, error) {
 	return f.subs, nil
 }
 
-func (f *fakeNotify) Unsubscribe(_ context.Context, _, _, id int64) error {
+func (f *fakeNotify) Unsubscribe(_ context.Context, _, id int64) error {
 	f.unsubscribed = append(f.unsubscribed, id)
 	return nil
 }
 
-func (f *fakeNotify) Chats() []int64                 { return []int64{group} }
-func (f *fakeNotify) NotifyChat(chatId int64) bool   { return chatId == group }
-func (f *fakeNotify) CanManage(chatId, _ int64) bool { return chatId == group }
+func (f *fakeNotify) Chats() []int64              { return []int64{group} }
+func (f *fakeNotify) CanManage(chatId int64) bool { return chatId == group }
 func (f *fakeNotify) Pending(context.Context, int64) ([]*agentModel.Notification, error) {
 	return f.pending, nil
 }
@@ -62,12 +61,12 @@ func (f *fakeNotify) Mute(_ context.Context, chatId, _ int64, _ string, notifica
 	return m, nil
 }
 
-func (f *fakeNotify) Unmute(_ context.Context, _, _, muteId int64) error {
+func (f *fakeNotify) Unmute(_ context.Context, _, muteId int64) error {
 	f.unmuted = append(f.unmuted, muteId)
 	return nil
 }
 
-func (f *fakeNotify) Mutes(context.Context, int64, int64) ([]*agentModel.Mute, []*agentModel.Notification, error) {
+func (f *fakeNotify) Mutes(context.Context, int64) ([]*agentModel.Mute, []*agentModel.Notification, error) {
 	return f.mutes, nil, nil
 }
 
@@ -105,7 +104,7 @@ func callbackQuery(chatId int64, data string) *models.CallbackQuery {
 
 func TestCallbackMute(t *testing.T) {
 	notify, sender := &fakeNotify{}, &fakeSender{}
-	h := New(&fakeChat{}, notify, 1)
+	h := New(&fakeChat{}, notify, 1, "pulse_bot")
 
 	h.callback(context.Background(), sender, callbackQuery(group, "mute:41:1d"))
 	assert.Equal(t, []int64{41}, notify.mutedIds)
@@ -128,7 +127,7 @@ func TestMutedCommand(t *testing.T) {
 	sender := &fakeSender{}
 	msg := message(7, "/muted")
 	msg.Chat = models.Chat{ID: group, Type: models.ChatTypeSupergroup}
-	New(&fakeChat{}, notify, 1).process(context.Background(), sender, msg)
+	New(&fakeChat{}, notify, 1, "pulse_bot").process(context.Background(), sender, msg)
 
 	require.Len(t, sender.sent, 1)
 	assert.Contains(t, sender.sent[0].Text, "caravan · алерты навсегда — скрыто 3 <i>(Иван)</i>")
@@ -136,7 +135,7 @@ func TestMutedCommand(t *testing.T) {
 	assert.Equal(t, "unmute:7", buttons[0][0].CallbackData)
 
 	notify.mutes = nil
-	New(&fakeChat{}, notify, 1).process(context.Background(), sender, msg)
+	New(&fakeChat{}, notify, 1, "pulse_bot").process(context.Background(), sender, msg)
 	assert.Contains(t, sender.sent[1].Text, "Ничего не приглушено")
 }
 
@@ -153,7 +152,7 @@ func (f *askChat) Ask(_ context.Context, q *chatModel.Question) (*chatModel.Answ
 
 func TestGroupReplyToNotification(t *testing.T) {
 	chat := &askChat{}
-	h := New(chat, &fakeNotify{}, 1)
+	h := New(chat, &fakeNotify{}, 1, "pulse_bot")
 
 	msg := message(7, "заглуши это до понедельника")
 	msg.Chat = models.Chat{ID: group, Type: models.ChatTypeSupergroup}
@@ -177,7 +176,7 @@ func TestSubsCommand(t *testing.T) {
 	sender := &fakeSender{}
 	msg := message(7, "/subs@pulse_bot")
 	msg.Chat = models.Chat{ID: group, Type: models.ChatTypeSupergroup}
-	h := New(&fakeChat{}, notify, 1)
+	h := New(&fakeChat{}, notify, 1, "pulse_bot")
 	h.process(context.Background(), sender, msg)
 
 	require.Len(t, sender.sent, 1)
@@ -191,5 +190,25 @@ func TestSubsCommand(t *testing.T) {
 
 	notify.subs = nil
 	h.process(context.Background(), sender, msg)
-	assert.Contains(t, sender.sent[len(sender.sent)-1].Text, "приходят все уведомления")
+	assert.Contains(t, sender.sent[len(sender.sent)-1].Text, "Уведомления в этот чат не приходят")
+}
+
+func TestGroupAddressed(t *testing.T) {
+	chat := &askChat{}
+	h := New(chat, &fakeNotify{}, 1, "Pulse_Bot")
+	groupMsg := func(text string) *models.Message {
+		m := message(7, text)
+		m.Chat = models.Chat{ID: group, Type: models.ChatTypeSupergroup}
+		return m
+	}
+
+	assert.True(t, h.addressed(groupMsg("@pulse_bot что с caravan?")), "упоминание, регистр не важен")
+	assert.True(t, h.addressed(groupMsg("/subs")))
+	assert.True(t, h.addressed(groupMsg("/subs@pulse_bot")))
+	assert.False(t, h.addressed(groupMsg("/subs@other_bot")), "команда другому боту")
+	assert.False(t, h.addressed(groupMsg("обсуждаем caravan")), "обычная переписка группы")
+	assert.False(t, h.addressed(groupMsg("@pulse_botnik привет")), "другое имя")
+
+	h.process(context.Background(), &fakeSender{}, groupMsg("@Pulse_Bot что с caravan?"))
+	assert.Equal(t, "что с caravan?", chat.question, "упоминание убрано из вопроса")
 }
