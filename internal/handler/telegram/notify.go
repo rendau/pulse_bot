@@ -37,10 +37,10 @@ var muteOptions = []struct{ code, duration, label string }{
 
 var severityIcons = map[string]string{"critical": "🔴", "warning": "🟠", "info": "🔵"}
 
-var kindLabels = map[string]string{"alert": "алерт", "deploy": "после выкатки", "logs": "ошибки в логах", "self": "сервис сообщает сам"}
+var kindLabels = map[string]string{"alert": "алерт", "deploy": "после выкатки", "logs": "ошибки в логах", "self": "сервис сообщает сам", "public": "публичный API"}
 
 // kindPlurals — вид во множественном числе: «caravan · алерты».
-var kindPlurals = map[string]string{"alert": "алерты", "deploy": "выкатки", "logs": "ошибки в логах", "self": "самоотчёты"}
+var kindPlurals = map[string]string{"alert": "алерты", "deploy": "выкатки", "logs": "ошибки в логах", "self": "самоотчёты", "public": "публичный API"}
 
 // Notifier — доставка ленты агента: раз в interval забирает новые уведомления каждого чата
 // уведомлений, присылает неприглушённые с кнопками приглушения и подтверждает полученное.
