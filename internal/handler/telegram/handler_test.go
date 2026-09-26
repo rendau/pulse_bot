@@ -49,6 +49,7 @@ type fakeSender struct {
 	mu       sync.Mutex
 	sent     []*bot.SendMessageParams
 	photos   []*bot.SendPhotoParams
+	answers  []string
 	failHtml bool
 }
 
@@ -74,6 +75,13 @@ func (f *fakeSender) SendChatAction(context.Context, *bot.SendChatActionParams) 
 	return true, nil
 }
 
+func (f *fakeSender) AnswerCallbackQuery(_ context.Context, p *bot.AnswerCallbackQueryParams) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.answers = append(f.answers, p.Text)
+	return true, nil
+}
+
 func message(userId int64, text string) *models.Message {
 	return &models.Message{
 		ID:   10,
@@ -85,7 +93,7 @@ func message(userId int64, text string) *models.Message {
 
 func TestProcess_Answer(t *testing.T) {
 	sender := &fakeSender{}
-	h := New(&fakeChat{answer: &chatModel.Answer{Text: "**caravan** в порядке", Incomplete: agentModel.IncompleteTimeout}})
+	h := New(&fakeChat{answer: &chatModel.Answer{Text: "**caravan** в порядке", Incomplete: agentModel.IncompleteTimeout}}, nil, 0)
 
 	h.process(context.Background(), sender, message(42, "что с caravan?"))
 
@@ -100,7 +108,7 @@ func TestProcess_Answer(t *testing.T) {
 func TestProcess_LongAnswerSplit(t *testing.T) {
 	sender := &fakeSender{}
 	paragraph := strings.Repeat("слово ", 500) // ~3000 символов
-	h := New(&fakeChat{answer: &chatModel.Answer{Text: paragraph + "\n\n" + paragraph}})
+	h := New(&fakeChat{answer: &chatModel.Answer{Text: paragraph + "\n\n" + paragraph}}, nil, 0)
 
 	h.process(context.Background(), sender, message(42, "q"))
 
@@ -111,7 +119,7 @@ func TestProcess_LongAnswerSplit(t *testing.T) {
 
 func TestProcess_PlainTextFallback(t *testing.T) {
 	sender := &fakeSender{failHtml: true}
-	h := New(&fakeChat{answer: &chatModel.Answer{Text: "**ответ**"}})
+	h := New(&fakeChat{answer: &chatModel.Answer{Text: "**ответ**"}}, nil, 0)
 
 	h.process(context.Background(), sender, message(42, "q"))
 
@@ -143,7 +151,7 @@ func TestProcess_Replies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sender := &fakeSender{}
-			New(tt.chat).process(context.Background(), sender, message(tt.userId, tt.text))
+			New(tt.chat, nil, 0).process(context.Background(), sender, message(tt.userId, tt.text))
 
 			require.Len(t, sender.sent, 1)
 			assert.Contains(t, sender.sent[0].Text, tt.want)
@@ -169,7 +177,7 @@ func TestProcess_Keyboard(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sender := &fakeSender{}
-			New(tt.chat).process(context.Background(), sender, message(tt.userId, tt.text))
+			New(tt.chat, nil, 0).process(context.Background(), sender, message(tt.userId, tt.text))
 
 			require.Len(t, sender.sent, 1)
 			if tt.want {
@@ -186,14 +194,14 @@ func TestProcess_ShuttingDown(t *testing.T) {
 	cancel()
 
 	sender := &fakeSender{}
-	New(&fakeChat{err: context.Canceled}).process(ctx, sender, message(42, "q"))
+	New(&fakeChat{err: context.Canceled}, nil, 0).process(ctx, sender, message(42, "q"))
 
 	require.Len(t, sender.sent, 1)
 	assert.Equal(t, textShuttingDown, sender.sent[0].Text)
 }
 
 func TestHandle_IgnoresGroups(t *testing.T) {
-	h := New(&fakeChat{})
+	h := New(&fakeChat{}, nil, 0)
 	msg := message(42, "q")
 	msg.Chat.Type = models.ChatTypeGroup
 
@@ -206,7 +214,7 @@ func TestProcess_Charts(t *testing.T) {
 	sender := &fakeSender{}
 	h := New(&fakeChat{answer: &chatModel.Answer{Text: "память в норме", Charts: []agentModel.Chart{
 		{Title: "Память caravan", Png: []byte("png1")}, {Title: "Ошибки", Png: []byte("png2")},
-	}}})
+	}}}, nil, 0)
 	h.process(context.Background(), sender, &models.Message{ID: 1, Chat: models.Chat{ID: 42, Type: models.ChatTypePrivate}, From: &models.User{ID: 7}, Text: "память caravan?"})
 
 	require.Len(t, sender.sent, 1, "сначала текст")
@@ -224,7 +232,7 @@ func TestProcess_Eval(t *testing.T) {
 
 	chat := &fakeChat{evalText: "✅ a  1.0s\n❌ b <x>\n\nИтого: 1/2"}
 	sender := &fakeSender{}
-	New(chat).process(context.Background(), sender, msg(42, "/eval a b"))
+	New(chat, nil, 0).process(context.Background(), sender, msg(42, "/eval a b"))
 
 	require.Len(t, sender.sent, 2)
 	assert.Equal(t, textEvalStarted, sender.sent[0].Text)
@@ -233,13 +241,13 @@ func TestProcess_Eval(t *testing.T) {
 
 	// не админ
 	sender = &fakeSender{}
-	New(chat).process(context.Background(), sender, msg(7, "/eval"))
+	New(chat, nil, 0).process(context.Background(), sender, msg(7, "/eval"))
 	require.Len(t, sender.sent, 1)
 	assert.Equal(t, textEvalDenied, sender.sent[0].Text)
 
 	// прогон уже идёт
 	sender = &fakeSender{}
-	New(&fakeChat{evalErr: errs.Busy}).process(context.Background(), sender, msg(42, "/eval"))
+	New(&fakeChat{evalErr: errs.Busy}, nil, 0).process(context.Background(), sender, msg(42, "/eval"))
 	require.Len(t, sender.sent, 2)
 	assert.Equal(t, textEvalBusy, sender.sent[1].Text)
 }

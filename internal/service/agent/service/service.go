@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/samber/lo"
 
@@ -19,9 +22,12 @@ import (
 )
 
 const (
-	askPath   = "/v1/ask"
-	resetPath = "/v1/reset"
-	evalPath  = "/v1/eval"
+	askPath           = "/v1/ask"
+	resetPath         = "/v1/reset"
+	evalPath          = "/v1/eval"
+	notificationsPath = "/v1/notifications"
+	ackPath           = "/v1/notifications/ack"
+	mutesPath         = "/v1/mutes"
 
 	maxBodyBytes = 16 << 20 // ответ с тремя графиками в base64 — сотни КБ
 )
@@ -40,7 +46,7 @@ func New(baseUrl, key string, httpClient *http.Client) *Service {
 
 func (s *Service) Ask(ctx context.Context, req *agentModel.AskReq) (*agentModel.Answer, error) {
 	rep := &askRep{}
-	err := s.sendRequest(ctx, askPath, &askReq{
+	err := s.sendRequest(ctx, http.MethodPost, askPath, &askReq{
 		Question:       req.Question,
 		ConversationId: req.ConversationId,
 		User:           userReq{Id: req.UserId, Name: req.UserName},
@@ -65,28 +71,73 @@ func (s *Service) Ask(ctx context.Context, req *agentModel.AskReq) (*agentModel.
 // Eval — прогон эталонных вопросов у агента: минуты, ответ — таблица.
 func (s *Service) Eval(ctx context.Context, only []string) (string, error) {
 	rep := &evalRep{}
-	if err := s.sendRequest(ctx, evalPath, &evalReq{Only: only}, rep); err != nil {
+	if err := s.sendRequest(ctx, http.MethodPost, evalPath, &evalReq{Only: only}, rep); err != nil {
 		return "", err
 	}
 	return rep.Text, nil
 }
 
 func (s *Service) Reset(ctx context.Context, conversationId string) error {
-	return s.sendRequest(ctx, resetPath, &resetReq{ConversationId: conversationId}, &resetRep{})
+	return s.sendRequest(ctx, http.MethodPost, resetPath, &resetReq{ConversationId: conversationId}, &resetRep{})
+}
+
+func (s *Service) Notifications(ctx context.Context, conversationId string, limit int) ([]*agentModel.Notification, error) {
+	rep := &notificationsRep{}
+	q := url.Values{"conversation_id": {conversationId}, "limit": {strconv.Itoa(limit)}}
+	if err := s.sendRequest(ctx, http.MethodGet, notificationsPath+"?"+q.Encode(), nil, rep); err != nil {
+		return nil, err
+	}
+	return lo.Map(rep.Items, decodeNotification), nil
+}
+
+func (s *Service) Ack(ctx context.Context, conversationId string, lastId int64) error {
+	return s.sendRequest(ctx, http.MethodPost, ackPath, &ackReq{ConversationId: conversationId, LastId: lastId}, &struct{}{})
+}
+
+func (s *Service) Mute(ctx context.Context, req *agentModel.MuteReq) (*agentModel.Mute, error) {
+	rep := &muteRep{}
+	err := s.sendRequest(ctx, http.MethodPost, mutesPath, &muteReq{
+		ConversationId: req.ConversationId, NotificationId: req.NotificationId, Duration: req.Duration,
+		User: userReq{Id: req.UserId, Name: req.UserName},
+	}, rep)
+	if err != nil {
+		return nil, err
+	}
+	return decodeMute(*rep, 0), nil
+}
+
+func (s *Service) Unmute(ctx context.Context, conversationId string, id int64) error {
+	q := url.Values{"conversation_id": {conversationId}}
+	return s.sendRequest(ctx, http.MethodDelete, mutesPath+"/"+strconv.FormatInt(id, 10)+"?"+q.Encode(), nil, &struct{}{})
+}
+
+func (s *Service) Mutes(ctx context.Context, conversationId string, mutedLimit int) ([]*agentModel.Mute, []*agentModel.Notification, error) {
+	rep := &mutesRep{}
+	q := url.Values{"conversation_id": {conversationId}, "muted_limit": {strconv.Itoa(mutedLimit)}}
+	if err := s.sendRequest(ctx, http.MethodGet, mutesPath+"?"+q.Encode(), nil, rep); err != nil {
+		return nil, nil, err
+	}
+	return lo.Map(rep.Mutes, decodeMute), lo.Map(rep.Muted, decodeNotification), nil
 }
 
 // sendRequest — единственная точка отправки: JSON, ключ, коды ошибок API → errs.
-func (s *Service) sendRequest(ctx context.Context, path string, reqObj, repObj any) error {
-	body, err := json.Marshal(reqObj)
-	if err != nil {
-		return fmt.Errorf("encode %s: %w", path, err)
+func (s *Service) sendRequest(ctx context.Context, method, path string, reqObj, repObj any) error {
+	var body io.Reader
+	if reqObj != nil {
+		raw, err := json.Marshal(reqObj)
+		if err != nil {
+			return fmt.Errorf("encode %s: %w", path, err)
+		}
+		body = bytes.NewReader(raw)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseUrl+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, s.baseUrl+path, body)
 	if err != nil {
 		return fmt.Errorf("new request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if reqObj != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Authorization", "Bearer "+s.key)
 
 	resp, err := s.httpClient.Do(req)
@@ -111,6 +162,8 @@ func (s *Service) sendRequest(ctx context.Context, path string, reqObj, repObj a
 			return fmt.Errorf("%w: %s", errs.NotAuthorized, msg)
 		case "invalid_request":
 			return fmt.Errorf("%w: %s", errs.InvalidRequest, msg)
+		case "not_found":
+			return fmt.Errorf("%w: %s", errs.ObjectNotFound, msg)
 		case "timeout":
 			return fmt.Errorf("%w: agent: %s", context.DeadlineExceeded, msg)
 		default:
@@ -167,4 +220,63 @@ type resetRep struct {
 type errorRep struct {
 	Code  string `json:"code"`
 	Error string `json:"error"`
+}
+
+type notificationRep struct {
+	Id           int64     `json:"id"`
+	At           time.Time `json:"at"`
+	Kind         string    `json:"kind"`
+	Service      string    `json:"service"`
+	Key          string    `json:"key"`
+	Severity     string    `json:"severity"`
+	Title        string    `json:"title"`
+	Text         string    `json:"text"`
+	Investigated bool      `json:"investigated"`
+	MutedBy      *int64    `json:"muted_by"`
+}
+
+type notificationsRep struct {
+	Items []notificationRep `json:"items"`
+}
+
+type ackReq struct {
+	ConversationId string `json:"conversation_id"`
+	LastId         int64  `json:"last_id"`
+}
+
+type muteReq struct {
+	ConversationId string  `json:"conversation_id"`
+	NotificationId int64   `json:"notification_id,omitempty"`
+	Duration       string  `json:"duration,omitempty"`
+	User           userReq `json:"user"`
+}
+
+type muteRep struct {
+	Id         int64      `json:"id"`
+	Service    string     `json:"service"`
+	Kind       string     `json:"kind"`
+	Key        string     `json:"key"`
+	Until      *time.Time `json:"until"`
+	Note       string     `json:"note"`
+	CreatedBy  string     `json:"created_by"`
+	Suppressed int        `json:"suppressed"`
+}
+
+type mutesRep struct {
+	Mutes []muteRep         `json:"mutes"`
+	Muted []notificationRep `json:"muted"`
+}
+
+func decodeNotification(v notificationRep, _ int) *agentModel.Notification {
+	return &agentModel.Notification{
+		Id: v.Id, At: v.At, Kind: v.Kind, Service: v.Service, Key: v.Key, Severity: v.Severity,
+		Title: v.Title, Text: v.Text, Investigated: v.Investigated, MutedBy: v.MutedBy,
+	}
+}
+
+func decodeMute(v muteRep, _ int) *agentModel.Mute {
+	return &agentModel.Mute{
+		Id: v.Id, Service: v.Service, Kind: v.Kind, Key: v.Key, Until: v.Until, Note: v.Note,
+		CreatedBy: v.CreatedBy, Suppressed: v.Suppressed,
+	}
 }

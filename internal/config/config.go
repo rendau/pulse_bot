@@ -20,6 +20,13 @@ var Conf = struct {
 	// админы: команда /eval (прогон эталонных вопросов агента)
 	TelegramAdminUsers []int64 `env:"TELEGRAM_ADMIN_USERS" envSeparator:","`
 
+	// уведомления агента (проактивный режим): чаты Telegram через запятую (группы — с минусом,
+	// личные — user ID), куда присылать ленту агента; пусто — не присылать. В этих чатах любой
+	// участник может приглушать уведомления и спрашивать бота ответом на его сообщение.
+	NotifyChatIds []int64 `env:"NOTIFY_CHAT_IDS" envSeparator:","`
+	// как часто забирать ленту у агента
+	NotifyPollInterval time.Duration `env:"NOTIFY_POLL_INTERVAL" envDefault:"20s"`
+
 	// pulse_agent: разбор вопроса, история бесед и графики — там; ключ — бота в API_KEYS агента
 	AgentUrl string `env:"AGENT_URL,required"`
 	AgentKey string `env:"AGENT_KEY"`

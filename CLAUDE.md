@@ -32,13 +32,24 @@ Telegram-бот (long polling, `github.com/go-telegram/bot`) — тонкий к
   - `system_http_server.go` — системный HTTP-сервер (`SYSTEM_HTTP_PORT`, дефолт 3003):
     /healthcheck, /docs/*, /metrics.
 - `internal/config/` — конфигурация через env (`config.go`).
-- `internal/handler/telegram/` — транспорт: личные сообщения, команды `/start` `/help` `/reset` (и кнопка сброса под полем ввода),
+- `internal/handler/telegram/` — транспорт: личные сообщения, команды `/start` `/help` `/reset` (и кнопка сброса под полем ввода), `/muted`,
   `/eval [id…]` — прогон эталонных вопросов агента (только `TELEGRAM_ADMIN_USERS`; «печатает…» до
   конца, таблица моноширинно),
   «печатает…», отправка ответа (Markdown → Telegram HTML, нарезка под 4096, фолбэк на plain text),
   графики — фото после текста, тексты ответов бота — `texts.go`.
-- `internal/usecase/chat/` — вопрос: белый список, «один вопрос за раз на чат», агент, метрики
-  вопросов. Беседа в агенте — `tg:<chat_id>`; `/reset` — `POST /v1/reset` агента.
+  Уведомления агента (`notify.go`, с 2026-09-26): `Notifier` раз в `NOTIFY_POLL_INTERVAL` забирает
+  ленту каждого чата из `NOTIFY_CHAT_IDS` (`GET /v1/notifications` агента), присылает неприглушённые
+  («🟠 заголовок», разбор, внизу — сервис · вид · время) с кнопками «🔕 1 ч / сутки / навсегда»
+  (`mute:<id>:<срок>` → `POST /v1/mutes` по уведомлению — его сервис) и подтверждает (`ack`;
+  остановка — не подтверждаем, отказ Telegram — подтверждаем). `/muted` — приглушения чата, что
+  скрыто, кнопки «🔔 Вернуть» (`unmute:<id>`). В группах бот молчит, кроме групп уведомлений: там
+  `/muted`, кнопки и ответы на его сообщения (вопрос агенту с текстом сообщения бота — «заглуши это
+  до понедельника» агент понимает сам). Приглушать в группе уведомлений может любой участник.
+- `internal/usecase/chat/` — вопрос: белый список (или чат уведомлений), «один вопрос за раз на чат»,
+  агент, метрики вопросов. Беседа в агенте — `constant.ConversationId` (`tg:<chat_id>`); `/reset` —
+  `POST /v1/reset` агента.
+- `internal/usecase/notify/` — чаты уведомлений, кто может приглушать (`CanManage`), лента,
+  подтверждение, приглушения (всё хранит агент); метрика `notification_total{outcome}`.
 - `internal/service/agent/` — клиент API pulse_agent (раскладка — скилл `golang-service`):
   `POST /v1/ask` с `format=telegram`, `charts=png`, `user` — id и имя из Telegram; коды ошибок
   агента → `internal/errs` (`busy` → `Busy`, `timeout` → `DeadlineExceeded`, прочее → `ServiceNA`).
@@ -141,6 +152,9 @@ handler`) и жизненный цикл. Бизнес-логики тут не�
   бота в `API_KEYS` агента (бот должен быть и в `EVAL_CLIENTS` агента — для `/eval`). Пустой
   `TELEGRAM_ALLOWED_USERS` — бот отказывает всем (предупреждение в логе). `TELEGRAM_ADMIN_USERS` —
   кому можно `/eval`; `AGENT_TIMEOUT` (6m) — ожидание ответа, `AGENT_EVAL_TIMEOUT` (21m) — прогона.
+  `NOTIFY_CHAT_IDS` — куда присылать уведомления агента (чаты через запятую, группы — с минусом;
+  пусто — не присылать), `NOTIFY_POLL_INTERVAL` (20s). Управление маршрутами удобнее env — позже,
+  через контекст беседы агента (подписки).
 
 ### Метрики
 - Prometheus на `/metrics` (системный сервер) при `WITH_METRICS=true`, реестр `metrics.Registry`.

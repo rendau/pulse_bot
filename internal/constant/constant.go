@@ -1,5 +1,7 @@
 package constant
 
+import "strconv"
+
 const (
 	ServiceName = "pulse_bot"
 )
@@ -20,3 +22,8 @@ const (
 	OutcomeBusy       = "busy"
 	OutcomeError      = "error"
 )
+
+// ConversationId — беседа чата Telegram в агенте: история, заметки, лента уведомлений и приглушения.
+func ConversationId(chatId int64) string {
+	return "tg:" + strconv.FormatInt(chatId, 10)
+}

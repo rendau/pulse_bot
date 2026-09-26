@@ -78,3 +78,52 @@ func TestEval(t *testing.T) {
 	assert.Equal(t, "Итого: 20/20", text)
 	assert.Equal(t, []any{"a"}, got["only"])
 }
+
+func TestNotifyApi(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/notifications":
+			_, _ = w.Write([]byte(`{"items":[{"id":42,"at":"2026-09-26T17:35:11+05:00","kind":"alert","service":"caravan",
+				"key":"HighErrors","severity":"critical","title":"caravan: сбои","text":"- разбор","investigated":true,"muted_by":3}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/mutes":
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, map[string]any{"conversation_id": "tg:-100", "notification_id": float64(42), "duration": "1h",
+				"user": map[string]any{"id": "7", "name": "Иван"}}, body)
+			_, _ = w.Write([]byte(`{"id":7,"service":"caravan","kind":"","key":"","until":"2026-09-26T18:35:00+05:00","created_at":"2026-09-26T17:35:00+05:00"}`))
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"code":"not_found","error":"object_not_found: mute 9"}`))
+		default:
+			_, _ = w.Write([]byte(`{"acked":true}`))
+		}
+	}))
+	defer srv.Close()
+	s := New(srv.URL, "k-bot", srv.Client())
+	ctx := context.Background()
+
+	items, err := s.Notifications(ctx, "tg:-100", 20)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, int64(3), *items[0].MutedBy)
+	assert.Equal(t, "17:35", items[0].At.Format("15:04"), "время — в поясе агента")
+
+	require.NoError(t, s.Ack(ctx, "tg:-100", 42))
+
+	m, err := s.Mute(ctx, &agentModel.MuteReq{ConversationId: "tg:-100", NotificationId: 42, Duration: "1h", UserId: "7", UserName: "Иван"})
+	require.NoError(t, err)
+	assert.Equal(t, "caravan", m.Service)
+	require.NotNil(t, m.Until)
+
+	err = s.Unmute(ctx, "tg:-100", 9)
+	require.ErrorIs(t, err, errs.ObjectNotFound)
+
+	assert.Equal(t, []string{
+		"GET /v1/notifications?conversation_id=tg%3A-100&limit=20",
+		"POST /v1/notifications/ack",
+		"POST /v1/mutes",
+		"DELETE /v1/mutes/9?conversation_id=tg%3A-100",
+	}, calls)
+}

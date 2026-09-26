@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 // причины, по которым агент закончил разбор досрочно (Answer.Incomplete)
 const (
 	IncompleteToolCalls = "tool_calls"
@@ -27,4 +29,40 @@ type Answer struct {
 type Chart struct {
 	Title string
 	Png   []byte
+}
+
+// Notification — уведомление наблюдателя агента для беседы. MutedBy — приглушение беседы, под
+// которое оно попало: не показывать, но подтвердить.
+type Notification struct {
+	Id           int64
+	At           time.Time
+	Kind         string // alert | deploy
+	Service      string
+	Key          string
+	Severity     string // critical | warning | info
+	Title        string
+	Text         string // Markdown как у ответов (формат telegram)
+	Investigated bool
+	MutedBy      *int64
+}
+
+// Mute — приглушение уведомлений в беседе; пустые поля — любое, Until nil — навсегда.
+type Mute struct {
+	Id         int64
+	Service    string
+	Kind       string
+	Key        string
+	Until      *time.Time
+	Note       string
+	CreatedBy  string
+	Suppressed int // сколько уведомлений уже скрыло
+}
+
+// MuteReq — приглушить в беседе сервис уведомления NotificationId на Duration (30m, 1d; пусто — навсегда).
+type MuteReq struct {
+	ConversationId string
+	NotificationId int64
+	Duration       string
+	UserId         string
+	UserName       string
 }

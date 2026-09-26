@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+	"github.com/samber/lo"
 
 	"github.com/mechta-market/pulse_bot/internal/errs"
 	chatModel "github.com/mechta-market/pulse_bot/internal/usecase/chat/model"
@@ -33,6 +34,9 @@ const (
 
 	// captionLimit — подпись к фото в Telegram до 1024 символов
 	captionLimit = 1000
+
+	// replyContextLimit — сколько текста сообщения бота передать агенту с ответом на него
+	replyContextLimit = 1500
 )
 
 // keyboard — постоянная кнопка сброса под полем ввода (вместо набора /reset руками).
@@ -44,34 +48,58 @@ var keyboard = &models.ReplyKeyboardMarkup{
 	ResizeKeyboard: true,
 }
 
-// Handler — транспорт Telegram: принимает сообщения из личных чатов и отвечает.
-// Сообщения обрабатываются параллельно (разные чаты не ждут друг друга);
-// Wait дожидается незаконченных при остановке.
+// Handler — транспорт Telegram: отвечает в личных чатах; в группах уведомлений — только на
+// /muted и на ответы на сообщения бота; кнопки приглушения под уведомлениями. Сообщения
+// обрабатываются параллельно (разные чаты не ждут друг друга); Wait дожидается незаконченных
+// при остановке.
 type Handler struct {
-	chat ChatUsecaseI
-	wg   sync.WaitGroup
+	chat   ChatUsecaseI
+	notify NotifyUsecaseI // nil — уведомления не настроены
+	botId  int64          // свои сообщения: ответ на них в группе — вопрос боту
+	wg     sync.WaitGroup
 }
 
-func New(chat ChatUsecaseI) *Handler {
-	return &Handler{chat: chat}
+func New(chat ChatUsecaseI, notify NotifyUsecaseI, botId int64) *Handler {
+	return &Handler{chat: chat, notify: notify, botId: botId}
 }
 
 // Handle — обработчик обновлений для bot.WithDefaultHandler (с WithNotAsyncHandlers:
 // горутину на сообщение запускает сам Handler, чтобы дождаться её в Wait).
 func (h *Handler) Handle(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if cq := update.CallbackQuery; cq != nil {
+		h.wg.Go(func() {
+			h.callback(ctx, b, cq)
+		})
+		return
+	}
+
 	msg := update.Message
 	if msg == nil || msg.From == nil {
 		return
 	}
 
-	// v1: только личные сообщения, в группах бот молчит
+	// в группах бот молчит, кроме групп уведомлений: там — /muted и ответы на его сообщения
 	if msg.Chat.Type != models.ChatTypePrivate {
-		return
+		if h.notify == nil || !h.notify.NotifyChat(msg.Chat.ID) {
+			return
+		}
+		if !isCommand(strings.TrimSpace(msg.Text), "/muted") && h.repliedTo(msg) == "" {
+			return
+		}
 	}
 
 	h.wg.Go(func() {
 		h.process(ctx, b, msg)
 	})
+}
+
+// repliedTo — текст сообщения бота, на которое ответили (пусто — не ответ боту).
+func (h *Handler) repliedTo(msg *models.Message) string {
+	reply := msg.ReplyToMessage
+	if reply == nil || reply.From == nil || reply.From.ID != h.botId {
+		return ""
+	}
+	return lo.CoalesceOrEmpty(reply.Text, reply.Caption, "…")
 }
 
 // Wait дожидается обработки принятых сообщений.
@@ -94,6 +122,9 @@ func (h *Handler) process(ctx context.Context, sender SenderI, msg *models.Messa
 		}
 		h.replyWithKeyboard(ctx, sender, msg, textWelcome)
 		return
+	case isCommand(text, "/muted"):
+		h.muted(ctx, sender, msg)
+		return
 	case isCommand(text, "/eval"):
 		h.eval(ctx, sender, msg, userId, strings.Fields(text)[1:])
 		return
@@ -104,6 +135,11 @@ func (h *Handler) process(ctx context.Context, sender SenderI, msg *models.Messa
 		}
 		h.replyWithKeyboard(ctx, sender, msg, textReset)
 		return
+	}
+
+	// ответ на сообщение бота (уведомление): модели — о чём речь
+	if replied := h.repliedTo(msg); replied != "" {
+		text = fmt.Sprintf(textReplyContext, truncate(replied, replyContextLimit), text)
 	}
 
 	answer, err := h.askWithTyping(ctx, sender, &chatModel.Question{
