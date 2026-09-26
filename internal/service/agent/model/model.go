@@ -36,7 +36,7 @@ type Chart struct {
 type Notification struct {
 	Id           int64
 	At           time.Time
-	Kind         string // alert | deploy
+	Kind         string // alert | deploy | logs | self
 	Service      string
 	Key          string
 	Severity     string // critical | warning | info

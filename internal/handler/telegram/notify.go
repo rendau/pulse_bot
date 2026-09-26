@@ -37,7 +37,10 @@ var muteOptions = []struct{ code, duration, label string }{
 
 var severityIcons = map[string]string{"critical": "🔴", "warning": "🟠", "info": "🔵"}
 
-var kindLabels = map[string]string{"alert": "алерт", "deploy": "после выкатки"}
+var kindLabels = map[string]string{"alert": "алерт", "deploy": "после выкатки", "logs": "ошибки в логах", "self": "сервис сообщает сам"}
+
+// kindPlurals — вид во множественном числе: «caravan · алерты».
+var kindPlurals = map[string]string{"alert": "алерты", "deploy": "выкатки", "logs": "ошибки в логах", "self": "самоотчёты"}
 
 // Notifier — доставка ленты агента: раз в interval забирает новые уведомления каждого чата
 // уведомлений, присылает неприглушённые с кнопками приглушения и подтверждает полученное.
@@ -258,11 +261,8 @@ var severityLabels = map[string]string{"info": "любой важности", "w
 // subscriptionSubject — «caravan», «все сервисы · алерты · только critical».
 func subscriptionSubject(sub *agentModel.Subscription) string {
 	parts := []string{lo.CoalesceOrEmpty(sub.Service, "все сервисы")}
-	switch sub.Kind {
-	case "alert":
-		parts = append(parts, "алерты")
-	case "deploy":
-		parts = append(parts, "выкатки")
+	if kind, ok := kindPlurals[sub.Kind]; ok {
+		parts = append(parts, kind)
 	}
 	if sub.MinSeverity != "" && sub.MinSeverity != "info" {
 		parts = append(parts, severityLabels[sub.MinSeverity])
@@ -330,11 +330,8 @@ func (h *Handler) muted(ctx context.Context, sender SenderI, msg *models.Message
 // muteSubject — что приглушено: «caravan», «caravan · алерты», «все уведомления».
 func muteSubject(m *agentModel.Mute) string {
 	subject := lo.CoalesceOrEmpty(m.Service, "все уведомления")
-	switch m.Kind {
-	case "alert":
-		subject += " · алерты"
-	case "deploy":
-		subject += " · выкатки"
+	if kind, ok := kindPlurals[m.Kind]; ok {
+		subject += " · " + kind
 	}
 	if m.Key != "" {
 		subject += " · " + m.Key
