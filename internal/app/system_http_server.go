@@ -6,7 +6,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/mechta-market/pulse_bot/internal/infra/metrics"
+	"github.com/rendau/pulse_bot/internal/infra/metrics"
 )
 
 // SystemHttpServerCreate builds the system HTTP server that exposes

@@ -6,9 +6,9 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
-	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
-	chatModel "github.com/mechta-market/pulse_bot/internal/usecase/chat/model"
-	notifyModel "github.com/mechta-market/pulse_bot/internal/usecase/notify/model"
+	agentModel "github.com/rendau/pulse_bot/internal/service/agent/model"
+	chatModel "github.com/rendau/pulse_bot/internal/usecase/chat/model"
+	notifyModel "github.com/rendau/pulse_bot/internal/usecase/notify/model"
 )
 
 type ChatUsecaseI interface {

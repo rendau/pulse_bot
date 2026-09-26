@@ -17,8 +17,8 @@ import (
 
 	"github.com/samber/lo"
 
-	"github.com/mechta-market/pulse_bot/internal/errs"
-	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
+	"github.com/rendau/pulse_bot/internal/errs"
+	agentModel "github.com/rendau/pulse_bot/internal/service/agent/model"
 )
 
 const (

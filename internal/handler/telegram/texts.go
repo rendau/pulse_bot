@@ -1,7 +1,7 @@
 package telegram
 
 import (
-	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
+	agentModel "github.com/rendau/pulse_bot/internal/service/agent/model"
 )
 
 // buttonReset — надпись кнопки сброса; её нажатие приходит обычным текстом

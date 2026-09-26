@@ -15,10 +15,10 @@ import (
 	"github.com/go-telegram/bot/models"
 	"github.com/samber/lo"
 
-	"github.com/mechta-market/pulse_bot/internal/errs"
-	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
-	notifyModel "github.com/mechta-market/pulse_bot/internal/usecase/notify/model"
-	"github.com/mechta-market/pulse_bot/internal/util/tgmd"
+	"github.com/rendau/pulse_bot/internal/errs"
+	agentModel "github.com/rendau/pulse_bot/internal/service/agent/model"
+	notifyModel "github.com/rendau/pulse_bot/internal/usecase/notify/model"
+	"github.com/rendau/pulse_bot/internal/util/tgmd"
 )
 
 // данные кнопок (callback_data, до 64 байт)

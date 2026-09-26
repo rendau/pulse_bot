@@ -3,7 +3,7 @@
 BINARY_NAME = svc
 BUILD_PATH = cmd/build
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS = -X github.com/mechta-market/pulse_bot/internal/constant.Version=$(VERSION)
+LDFLAGS = -X github.com/rendau/pulse_bot/internal/constant.Version=$(VERSION)
 
 .SILENT:
 

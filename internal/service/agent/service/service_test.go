@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mechta-market/pulse_bot/internal/errs"
-	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
+	"github.com/rendau/pulse_bot/internal/errs"
+	agentModel "github.com/rendau/pulse_bot/internal/service/agent/model"
 )
 
 func TestAsk(t *testing.T) {

@@ -2,7 +2,7 @@
 
 Руководство для Claude Code по работе с этим репозиторием. Go-сервис на Clean Architecture + DDD:
 Telegram-бот (long polling, `github.com/go-telegram/bot`) — тонкий клиент агента pulse_agent
-(github.com/mechta-market/pulse_agent). Разбор вопроса — LLM, инструменты pulse, промпт, графики,
+(github.com/rendau/pulse_agent). Разбор вопроса — LLM, инструменты pulse, промпт, графики,
 история бесед, эталонные вопросы — живёт в агенте (контракт — его `docs/agent-api.md`); бот
 отвечает за Telegram: белый список, «печатает…», Markdown → HTML, фото графиков.
 

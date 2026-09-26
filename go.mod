@@ -1,4 +1,4 @@
-module github.com/mechta-market/pulse_bot
+module github.com/rendau/pulse_bot
 
 go 1.27
 

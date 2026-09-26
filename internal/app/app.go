@@ -17,13 +17,13 @@ import (
 	"github.com/go-telegram/bot/models"
 	"github.com/samber/lo"
 
-	"github.com/mechta-market/pulse_bot/internal/config"
-	"github.com/mechta-market/pulse_bot/internal/constant"
-	handlerTelegramP "github.com/mechta-market/pulse_bot/internal/handler/telegram"
-	"github.com/mechta-market/pulse_bot/internal/infra/httpx"
-	serviceAgentServiceP "github.com/mechta-market/pulse_bot/internal/service/agent/service"
-	usecaseChatP "github.com/mechta-market/pulse_bot/internal/usecase/chat"
-	usecaseNotifyP "github.com/mechta-market/pulse_bot/internal/usecase/notify"
+	"github.com/rendau/pulse_bot/internal/config"
+	"github.com/rendau/pulse_bot/internal/constant"
+	handlerTelegramP "github.com/rendau/pulse_bot/internal/handler/telegram"
+	"github.com/rendau/pulse_bot/internal/infra/httpx"
+	serviceAgentServiceP "github.com/rendau/pulse_bot/internal/service/agent/service"
+	usecaseChatP "github.com/rendau/pulse_bot/internal/usecase/chat"
+	usecaseNotifyP "github.com/rendau/pulse_bot/internal/usecase/notify"
 )
 
 const (

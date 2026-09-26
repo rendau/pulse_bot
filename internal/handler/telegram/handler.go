@@ -16,9 +16,9 @@ import (
 	"github.com/go-telegram/bot/models"
 	"github.com/samber/lo"
 
-	"github.com/mechta-market/pulse_bot/internal/errs"
-	chatModel "github.com/mechta-market/pulse_bot/internal/usecase/chat/model"
-	"github.com/mechta-market/pulse_bot/internal/util/tgmd"
+	"github.com/rendau/pulse_bot/internal/errs"
+	chatModel "github.com/rendau/pulse_bot/internal/usecase/chat/model"
+	"github.com/rendau/pulse_bot/internal/util/tgmd"
 )
 
 const (

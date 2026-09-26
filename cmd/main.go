@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/mechta-market/pulse_bot/internal/app"
+	"github.com/rendau/pulse_bot/internal/app"
 )
 
 func main() {

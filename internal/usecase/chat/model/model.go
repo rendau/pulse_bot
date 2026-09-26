@@ -1,6 +1,6 @@
 package model
 
-import agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
+import agentModel "github.com/rendau/pulse_bot/internal/service/agent/model"
 
 // Question — вопрос пользователя в чате.
 type Question struct {

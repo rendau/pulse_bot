@@ -11,11 +11,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/samber/lo"
 
-	"github.com/mechta-market/pulse_bot/internal/constant"
-	"github.com/mechta-market/pulse_bot/internal/errs"
-	"github.com/mechta-market/pulse_bot/internal/infra/metrics"
-	agentModel "github.com/mechta-market/pulse_bot/internal/service/agent/model"
-	"github.com/mechta-market/pulse_bot/internal/usecase/notify/model"
+	"github.com/rendau/pulse_bot/internal/constant"
+	"github.com/rendau/pulse_bot/internal/errs"
+	"github.com/rendau/pulse_bot/internal/infra/metrics"
+	agentModel "github.com/rendau/pulse_bot/internal/service/agent/model"
+	"github.com/rendau/pulse_bot/internal/usecase/notify/model"
 )
 
 const (

@@ -94,7 +94,7 @@ Telegram ⇄ pulse_bot ⇄ LLM-провайдер (агентный цикл с 
 
 **Разделение с агентом (2026-09-25):** разбор вопроса (LLM, инструменты pulse, промпт, графики,
 история бесед, эталонные вопросы) вынесен в сервис pulse_agent
-(github.com/mechta-market/pulse_agent, контракт — его `docs/agent-api.md`): им пользуются и другие
+(github.com/rendau/pulse_agent, контракт — его `docs/agent-api.md`): им пользуются и другие
 системы (service-desk, разбор алертов). Бот — транспорт Telegram: белый список, «печатает…»,
 Markdown → HTML, фото графиков; вопрос уходит в `POST /v1/ask` (format=telegram, charts=png,
 беседа `tg:<chat_id>`). Отладочная ручка `/debug/ask` удалена — отладка через API агента (`trace`).
@@ -122,7 +122,7 @@ Markdown → HTML, фото графиков; вопрос уходит в `POST
 ## Окружение и деплой
 
 - Кластер `yc-zeon`, чарт — в `~/projects/mechta/helm-zeon/charts/` (ArgoCD, GitOps:
-  push в master = деплой). Образ `ghcr.io/mechta-market/pulse_bot:latest`, keel.
+  push в master = деплой). Образ `ghcr.io/rendau/pulse_bot:latest`, keel.
 - Весь env сервиса — в kusec (app `pulse_bot`), у деплоймента своих env нет. Не заводить
   `LOG_LEVEL`, `DEBUG`, `HTTP_CORS` без причины.
 - Ожидаемые переменные: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, `LLM_PROVIDER`

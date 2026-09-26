@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mechta-market/pulse_bot/internal/errs"
+	"github.com/rendau/pulse_bot/internal/errs"
 )
 
 func TestCanManage(t *testing.T) {
