@@ -22,7 +22,9 @@ func TestAsk(t *testing.T) {
 		assert.Equal(t, "Bearer k-bot", r.Header.Get("Authorization"))
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
 		_, _ = w.Write([]byte(`{"answer":"память в норме","result":null,"incomplete":"",
-			"charts":[{"title":"Память","type":"line","png":"UE5H"}],"duration_ms":1}`))
+			"charts":[{"title":"Память","type":"line","png":"UE5H"}],"duration_ms":1,
+			"human_replies":[{"service":"seller","endpoint_id":"order_raw","params":{"number":"123"},"status_code":200,
+				"request_id":"pulse-1","data":{"number":"123"},"masked_fields":1}]}`))
 	}))
 	defer srv.Close()
 
@@ -38,6 +40,12 @@ func TestAsk(t *testing.T) {
 	assert.Equal(t, "память в норме", answer.Text)
 	require.Len(t, answer.Charts, 1)
 	assert.Equal(t, []byte("PNG"), answer.Charts[0].Png)
+	require.Len(t, answer.HumanReplies, 1)
+	reply := answer.HumanReplies[0]
+	assert.Equal(t, "order_raw", reply.EndpointId)
+	assert.Equal(t, map[string]any{"number": "123"}, reply.Params)
+	assert.JSONEq(t, `{"number":"123"}`, string(reply.Data))
+	assert.Equal(t, 1, reply.MaskedFields)
 }
 
 func TestErrors(t *testing.T) {

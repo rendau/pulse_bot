@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -49,6 +50,7 @@ type fakeSender struct {
 	mu       sync.Mutex
 	sent     []*bot.SendMessageParams
 	photos   []*bot.SendPhotoParams
+	docs     []*bot.SendDocumentParams
 	answers  []string
 	failHtml bool
 }
@@ -57,6 +59,13 @@ func (f *fakeSender) SendPhoto(_ context.Context, p *bot.SendPhotoParams) (*mode
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.photos = append(f.photos, p)
+	return &models.Message{}, nil
+}
+
+func (f *fakeSender) SendDocument(_ context.Context, p *bot.SendDocumentParams) (*models.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.docs = append(f.docs, p)
 	return &models.Message{}, nil
 }
 
@@ -223,6 +232,33 @@ func TestProcess_Charts(t *testing.T) {
 	upload, ok := sender.photos[1].Photo.(*models.InputFileUpload)
 	require.True(t, ok)
 	assert.Equal(t, "chart-2.png", upload.Filename)
+}
+
+// Ответ ручки для человека — после вывода агента: маленький — JSON блоком кода, большой — файлом.
+func TestProcess_HumanReplies(t *testing.T) {
+	sender := &fakeSender{}
+	big := `{"items":["` + strings.Repeat("x", humanInlineLimit) + `"]}`
+	h := New(&fakeChat{answer: &chatModel.Answer{Text: "Отправил ответ ручки order_raw.", HumanReplies: []agentModel.HumanReply{
+		{Service: "seller", EndpointId: "order_raw", Params: map[string]any{"number": "123"}, StatusCode: 200, RequestId: "pulse-1",
+			MaskedFields: 1, Data: json.RawMessage(`{"number":"123","note":"<b>"}`)},
+		{Service: "seller", EndpointId: "orders_raw", StatusCode: 200, Data: json.RawMessage(big)},
+	}}}, nil, 0, "pulse_bot")
+	h.process(context.Background(), sender, &models.Message{ID: 1, Chat: models.Chat{ID: 42, Type: models.ChatTypePrivate}, From: &models.User{ID: 7}, Text: "заказ 123 как есть"})
+
+	require.Len(t, sender.sent, 2, "текст агента и маленький ответ")
+	inline := sender.sent[1].Text
+	assert.Contains(t, inline, "<b>seller · order_raw</b>")
+	assert.Contains(t, inline, "number=123")
+	assert.Contains(t, inline, "секретных полей скрыто: 1")
+	assert.Contains(t, inline, "<code>pulse-1</code>")
+	assert.Contains(t, inline, "<pre><code class=\"language-json\">{\n  &#34;number&#34;: &#34;123&#34;,\n  &#34;note&#34;: &#34;&lt;b&gt;&#34;\n}</code></pre>",
+		"JSON с отступами, HTML экранирован")
+
+	require.Len(t, sender.docs, 1)
+	upload, ok := sender.docs[0].Document.(*models.InputFileUpload)
+	require.True(t, ok)
+	assert.Equal(t, "seller-orders_raw.json", upload.Filename)
+	assert.Contains(t, sender.docs[0].Caption, "в файле")
 }
 
 func TestProcess_Eval(t *testing.T) {

@@ -308,6 +308,11 @@ func (h *Handler) sendAnswer(ctx context.Context, sender SenderI, msg *models.Me
 			slog.Error("telegram: send chart", "chat_id", msg.Chat.ID, "error", err)
 		}
 	}
+
+	// ответы ручек для человека — как есть, после вывода агента
+	for _, reply := range answer.HumanReplies {
+		h.sendHumanReply(ctx, sender, msg.Chat.ID, reply)
+	}
 }
 
 func (h *Handler) replyError(ctx context.Context, sender SenderI, msg *models.Message, err error) {

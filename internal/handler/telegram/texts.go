@@ -28,6 +28,14 @@ const (
 	textTimeout      = "Не успел разобраться за отведённое время. Попробуйте сузить вопрос."
 	textShuttingDown = "Бот перезапускается — повторите вопрос через минуту."
 
+	// ответ ручки для человека: заголовок (сервис · ручка), пометки
+	textHumanReplyHead    = "📎 <b>%s · %s</b> — ответ сервиса как есть"
+	textHumanReplyStatus  = "статус ответа: %d"
+	textHumanReplyMasked  = "секретных полей скрыто: %d"
+	textHumanReplyCut     = "ответ урезан по лимиту строк"
+	textHumanReplyInFile  = "ответ большой — в файле"
+	textHumanReplyRequest = "request_id: <code>%s</code>"
+
 	textMuted           = "🔕 Приглушено: %s (%s). Что приглушено и вернуть — /muted"
 	textUnmuted         = "🔔 Приглушение снято (%s): уведомления снова приходят."
 	textUnmutedShort    = "🔔 Снова присылаю"

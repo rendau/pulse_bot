@@ -116,9 +116,10 @@ func (u *Usecase) Ask(ctx context.Context, q *model.Question) (*model.Answer, er
 
 	metricAnswerDuration.Observe(time.Since(started).Seconds())
 	metricQuestions.WithLabelValues(lo.Ternary(answer.Incomplete == "", constant.OutcomeAnswered, constant.OutcomeIncomplete)).Inc()
-	slog.Info("question answered", "chat_id", q.ChatId, "incomplete", answer.Incomplete, "charts", len(answer.Charts))
+	slog.Info("question answered", "chat_id", q.ChatId, "incomplete", answer.Incomplete, "charts", len(answer.Charts),
+		"human_replies", len(answer.HumanReplies))
 
-	return &model.Answer{Text: answer.Text, Incomplete: answer.Incomplete, Charts: answer.Charts}, nil
+	return &model.Answer{Text: answer.Text, Incomplete: answer.Incomplete, Charts: answer.Charts, HumanReplies: answer.HumanReplies}, nil
 }
 
 // Admin — может ли пользователь запускать /eval.

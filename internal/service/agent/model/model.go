@@ -1,5 +1,7 @@
 package model
 
+import "encoding/json"
+
 import "time"
 
 // причины, по которым агент закончил разбор досрочно (Answer.Incomplete)
@@ -23,6 +25,22 @@ type Answer struct {
 	// Incomplete — разбор закончен досрочно: timeout | tool_calls | output; пусто — полный
 	Incomplete string
 	Charts     []Chart
+	// HumanReplies — ответы ручек сервисов только для человека: показать как есть, модель их не видела
+	HumanReplies []HumanReply
+}
+
+// HumanReply — ответ ручки сервиса для человека (audience: human): Data — как ответил сервис.
+type HumanReply struct {
+	Service    string
+	EndpointId string
+	Title      string
+	Params     map[string]any
+	StatusCode int
+	RequestId  string
+	Data       json.RawMessage
+	Truncated  bool
+	// MaskedFields — сколько значений полей с именем секрета pulse заменил маской
+	MaskedFields int
 }
 
 // Chart — картинка графика к ответу.

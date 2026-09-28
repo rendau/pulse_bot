@@ -37,5 +37,6 @@ type SenderI interface {
 	SendMessage(ctx context.Context, params *bot.SendMessageParams) (*models.Message, error)
 	SendChatAction(ctx context.Context, params *bot.SendChatActionParams) (bool, error)
 	SendPhoto(ctx context.Context, params *bot.SendPhotoParams) (*models.Message, error)
+	SendDocument(ctx context.Context, params *bot.SendDocumentParams) (*models.Message, error)
 	AnswerCallbackQuery(ctx context.Context, params *bot.AnswerCallbackQueryParams) (bool, error)
 }

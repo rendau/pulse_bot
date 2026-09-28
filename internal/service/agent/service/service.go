@@ -58,7 +58,8 @@ func (s *Service) Ask(ctx context.Context, req *agentModel.AskReq) (*agentModel.
 		return nil, err
 	}
 
-	answer := &agentModel.Answer{Text: rep.Answer, Incomplete: rep.Incomplete}
+	answer := &agentModel.Answer{Text: rep.Answer, Incomplete: rep.Incomplete,
+		HumanReplies: lo.Map(rep.HumanReplies, decodeHumanReply)}
 	for _, c := range rep.Charts {
 		png, err := base64.StdEncoding.DecodeString(c.Png)
 		if err != nil {
@@ -216,6 +217,26 @@ type askRep struct {
 		Title string `json:"title"`
 		Png   string `json:"png"`
 	} `json:"charts"`
+	HumanReplies []humanReplyRep `json:"human_replies"`
+}
+
+type humanReplyRep struct {
+	Service      string          `json:"service"`
+	EndpointId   string          `json:"endpoint_id"`
+	Title        string          `json:"title"`
+	Params       map[string]any  `json:"params"`
+	StatusCode   int             `json:"status_code"`
+	RequestId    string          `json:"request_id"`
+	Data         json.RawMessage `json:"data"`
+	Truncated    bool            `json:"truncated"`
+	MaskedFields int             `json:"masked_fields"`
+}
+
+func decodeHumanReply(v humanReplyRep, _ int) agentModel.HumanReply {
+	return agentModel.HumanReply{
+		Service: v.Service, EndpointId: v.EndpointId, Title: v.Title, Params: v.Params, StatusCode: v.StatusCode,
+		RequestId: v.RequestId, Data: v.Data, Truncated: v.Truncated, MaskedFields: v.MaskedFields,
+	}
 }
 
 type evalReq struct {
