@@ -19,7 +19,8 @@ var Conf = struct {
 	// не приходят) и заметки чата; в группе — любой участник
 	TelegramBotToken       string  `env:"TELEGRAM_BOT_TOKEN,required"`
 	TelegramAllowedChatIds []int64 `env:"TELEGRAM_ALLOWED_CHAT_IDS" envSeparator:","`
-	// админы (user ID): команда /eval; их личные чаты разрешены автоматически
+	// админы (user ID): команда /eval; их личные чаты разрешены автоматически; им же бот пишет id
+	// группы, в которую его добавили, — для TELEGRAM_ALLOWED_CHAT_IDS
 	TelegramAdminUsers []int64 `env:"TELEGRAM_ADMIN_USERS" envSeparator:","`
 
 	// как часто забирать у агента ленту уведомлений разрешённых чатов

@@ -50,7 +50,8 @@ var keyboard = &models.ReplyKeyboardMarkup{
 }
 
 // Handler — транспорт Telegram: отвечает в разрешённых чатах; в группе — на команды, упоминание
-// бота и ответы на его сообщения (остальную переписку группы бот не видит — режим приватности); кнопки приглушения под уведомлениями. Сообщения
+// бота и ответы на его сообщения (остальную переписку группы бот не видит — режим приватности); кнопки приглушения под уведомлениями.
+// Бота добавили в группу или она стала супергруппой — её id админам в личные чаты (membership.go). Сообщения
 // обрабатываются параллельно (разные чаты не ждут друг друга); Wait дожидается незаконченных
 // при остановке.
 type Handler struct {
@@ -82,8 +83,28 @@ func (h *Handler) Handle(ctx context.Context, b *bot.Bot, update *models.Update)
 		return
 	}
 
+	// бота добавили в группу — админам её id
+	if member := update.MyChatMember; member != nil {
+		h.wg.Go(func() {
+			h.joined(ctx, b, member)
+		})
+		return
+	}
+
 	msg := update.Message
-	if msg == nil || msg.From == nil {
+	if msg == nil {
+		return
+	}
+
+	// группа стала супергруппой — её id сменился, админам новый
+	if msg.MigrateToChatID != 0 {
+		h.wg.Go(func() {
+			h.migrated(ctx, b, msg)
+		})
+		return
+	}
+
+	if msg.From == nil {
 		return
 	}
 

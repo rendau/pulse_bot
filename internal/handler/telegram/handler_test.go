@@ -25,9 +25,12 @@ type fakeChat struct {
 	evalText string
 	evalErr  error
 	evalOnly []string
+	admins   []int64
 }
 
 func (f *fakeChat) Admin(userId int64) bool { return userId == 42 }
+
+func (f *fakeChat) Admins() []int64 { return f.admins }
 
 func (f *fakeChat) Eval(_ context.Context, _ int64, only []string) (string, error) {
 	f.evalOnly = only

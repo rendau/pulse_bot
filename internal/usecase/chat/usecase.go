@@ -42,7 +42,7 @@ func init() {
 type Config struct {
 	// AllowedChats — разрешённые чаты (личные — ID человека, группы — с минусом), админы — уже в них
 	AllowedChats []int64
-	// AdminUsers — кому можно /eval
+	// AdminUsers — кому можно /eval и кому бот пишет id группы, в которую его добавили
 	AdminUsers []int64
 	// AskTimeout, EvalTimeout — сколько ждать ответ агента и прогон эталонов
 	AskTimeout  time.Duration
@@ -126,6 +126,11 @@ func (u *Usecase) Ask(ctx context.Context, q *model.Question) (*model.Answer, er
 func (u *Usecase) Admin(userId int64) bool {
 	_, ok := u.admins[userId]
 	return ok
+}
+
+// Admins — админы бота: им в личные чаты бот пишет id группы, в которую его добавили.
+func (u *Usecase) Admins() []int64 {
+	return lo.Uniq(u.cfg.AdminUsers)
 }
 
 // Eval — прогон эталонных вопросов агента (только админы): таблица текстом.

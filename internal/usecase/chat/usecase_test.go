@@ -104,3 +104,10 @@ func TestEval(t *testing.T) {
 	_, err = uc.Eval(context.Background(), 7, nil)
 	require.ErrorIs(t, err, errs.NotAuthorized, "разрешён, но не админ")
 }
+
+func TestAdmins(t *testing.T) {
+	uc := New(Config{AllowedChats: []int64{42, 7, -100}, AdminUsers: []int64{42, 7, 42}}, &fakeAgent{})
+	assert.Equal(t, []int64{42, 7}, uc.Admins(), "без повторов, разрешённые чаты — не админы")
+
+	assert.Empty(t, New(Config{AllowedChats: []int64{1}}, &fakeAgent{}).Admins())
+}

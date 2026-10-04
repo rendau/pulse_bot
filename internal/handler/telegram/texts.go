@@ -53,6 +53,15 @@ const (
 	// textReplyContext — вопрос ответом на сообщение бота: что это было за сообщение
 	textReplyContext = "Ответ на сообщение бота:\n«%s»\n\n%s"
 
+	// админам в личный чат: бота добавили в группу (название, id, кто добавил) или группа стала
+	// супергруппой (название, новый и прежний id); последним — есть ли id в списке разрешённых
+	textGroupJoined   = "➕ Бота добавили в группу <b>%s</b>\n\nID группы: <code>%d</code>\nКто добавил: %s\n\n%s"
+	textGroupMigrated = "♻️ Группа <b>%s</b> стала супергруппой — её ID сменился\n\nID группы: <code>%d</code>\nПрежний: <code>%d</code>\n\n%s"
+
+	textGroupAllowed    = "ID группы уже есть в <code>TELEGRAM_ALLOWED_CHAT_IDS</code> — бот в ней отвечает."
+	textGroupNotAllowed = "ID группы нет в <code>TELEGRAM_ALLOWED_CHAT_IDS</code> — бот в ней молчит. Чтобы включить, допишите его в список."
+	textGroupStaleId    = "В <code>TELEGRAM_ALLOWED_CHAT_IDS</code> записан прежний ID — бот в группе замолчал. Замените его новым."
+
 	textEvalDenied  = "Команда /eval — только для админов бота."
 	textEvalStarted = "Запустил прогон эталонных вопросов агента — это 5–10 минут, пришлю таблицу."
 	textEvalBusy    = "Прогон уже идёт — дождитесь его таблицы."

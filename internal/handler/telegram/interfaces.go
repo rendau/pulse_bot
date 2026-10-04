@@ -16,6 +16,7 @@ type ChatUsecaseI interface {
 	Ask(ctx context.Context, q *chatModel.Question) (*chatModel.Answer, error)
 	Reset(ctx context.Context, chatId int64) error
 	Admin(userId int64) bool
+	Admins() []int64
 	Eval(ctx context.Context, userId int64, only []string) (string, error)
 }
 

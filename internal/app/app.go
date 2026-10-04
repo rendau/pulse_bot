@@ -90,7 +90,8 @@ func (a *App) Init() {
 				ResponseHeaderTimeout: telegramHttpTimeout,
 				VerifyTLS:             true,
 			})),
-			bot.WithAllowedUpdates(bot.AllowedUpdates{"message", "callback_query"}),
+			// my_chat_member — бота добавили в группу: её id админам
+			bot.WithAllowedUpdates(bot.AllowedUpdates{"message", "callback_query", "my_chat_member"}),
 			// обработчику нужен id бота (ответы на его сообщения) — он создаётся после бота
 			bot.WithDefaultHandler(func(ctx context.Context, b *bot.Bot, update *models.Update) {
 				a.telegramHandler.Handle(ctx, b, update)
