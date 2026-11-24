@@ -37,10 +37,13 @@ var muteOptions = []struct{ code, duration, label string }{
 
 var severityIcons = map[string]string{"critical": "🔴", "warning": "🟠", "info": "🔵"}
 
-var kindLabels = map[string]string{"alert": "алерт", "deploy": "после выкатки", "logs": "ошибки в логах", "self": "сервис сообщает сам", "public": "публичный API"}
+var kindLabels = map[string]string{"alert": "алерт", "deploy": "после выкатки", "logs": "ошибки в логах", "self": "сервис сообщает сам", "public": "публичный API", "security": "атака из интернета"}
 
 // kindPlurals — вид во множественном числе: «caravan · алерты».
-var kindPlurals = map[string]string{"alert": "алерты", "deploy": "выкатки", "logs": "ошибки в логах", "self": "самоотчёты", "public": "публичный API"}
+var kindPlurals = map[string]string{"alert": "алерты", "deploy": "выкатки", "logs": "ошибки в логах", "self": "самоотчёты", "public": "публичный API", "security": "атаки из интернета"}
+
+// kindSecurity — атака из интернета: без сервиса, ключ — адрес; приходит только по явной подписке.
+const kindSecurity = "security"
 
 // Notifier — доставка ленты агента: раз в interval забирает новые уведомления каждого чата
 // уведомлений, присылает неприглушённые с кнопками приглушения и подтверждает полученное.
@@ -138,9 +141,9 @@ func sendNotification(ctx context.Context, sender SenderI, chatId int64, n *agen
 	return nil
 }
 
-// renderNotification — «🟠 заголовок», разбор, внизу — сервис, вид и время.
+// renderNotification — «🟠 заголовок», разбор, внизу — сервис (у атаки — адрес), вид и время.
 func renderNotification(n *agentModel.Notification, bodyHtml string) string {
-	footer := []string{html.EscapeString(n.Service), lo.CoalesceOrEmpty(kindLabels[n.Kind], n.Kind), n.At.Format("02.01 15:04")}
+	footer := lo.Compact([]string{html.EscapeString(lo.CoalesceOrEmpty(n.Service, n.Key)), lo.CoalesceOrEmpty(kindLabels[n.Kind], n.Kind), n.At.Format("02.01 15:04")})
 	if !n.Investigated {
 		footer = append(footer, "без разбора")
 	}
@@ -258,9 +261,16 @@ func (h *Handler) subscriptions(ctx context.Context, sender SenderI, msg *models
 
 var severityLabels = map[string]string{"info": "любой важности", "warning": "warning и выше", "critical": "только critical"}
 
-// subscriptionSubject — «caravan», «все сервисы · алерты · только critical».
+// subscriptionSubject — «caravan», «все сервисы · алерты · только critical», «атаки из интернета»;
+// подписка на всё — без атак (они — только отдельной подпиской).
 func subscriptionSubject(sub *agentModel.Subscription) string {
 	parts := []string{lo.CoalesceOrEmpty(sub.Service, "все сервисы")}
+	switch {
+	case sub.Kind == kindSecurity && sub.Service == "":
+		parts = nil
+	case sub.Kind == "" && sub.Service == "":
+		parts = []string{"всё, кроме атак из интернета"}
+	}
 	if kind, ok := kindPlurals[sub.Kind]; ok {
 		parts = append(parts, kind)
 	}
@@ -327,11 +337,12 @@ func (h *Handler) muted(ctx context.Context, sender SenderI, msg *models.Message
 	}
 }
 
-// muteSubject — что приглушено: «caravan», «caravan · алерты», «все уведомления».
+// muteSubject — что приглушено: «caravan», «caravan · алерты», «все уведомления», «атаки из
+// интернета · 129.226.55.176».
 func muteSubject(m *agentModel.Mute) string {
 	subject := lo.CoalesceOrEmpty(m.Service, "все уведомления")
 	if kind, ok := kindPlurals[m.Kind]; ok {
-		subject += " · " + kind
+		subject = lo.Ternary(m.Service == "", kind, subject+" · "+kind)
 	}
 	if m.Key != "" {
 		subject += " · " + m.Key

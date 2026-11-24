@@ -54,7 +54,7 @@ type Chart struct {
 type Notification struct {
 	Id           int64
 	At           time.Time
-	Kind         string // alert | deploy | logs | self | public
+	Kind         string // alert | deploy | logs | self | public | security (атака: Service пуст, Key — адрес)
 	Service      string
 	Key          string
 	Severity     string // critical | warning | info

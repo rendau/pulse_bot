@@ -212,3 +212,20 @@ func TestGroupAddressed(t *testing.T) {
 	h.process(context.Background(), &fakeSender{}, groupMsg("@Pulse_Bot что с caravan?"))
 	assert.Equal(t, "что с caravan?", chat.question, "упоминание убрано из вопроса")
 }
+
+func TestSecurityLabels(t *testing.T) {
+	n := &agentModel.Notification{Kind: "security", Key: "129.226.55.176", Severity: "critical", Investigated: true,
+		Title: "атака с 129.226.55.176: <перебор>", At: time.Date(2026, 11, 23, 19, 40, 0, 0, time.UTC)}
+	text := renderNotification(n, "тело")
+	assert.Contains(t, text, "<i>129.226.55.176 · атака из интернета · 23.11 19:40</i>", "у атаки вместо сервиса — адрес")
+	assert.Contains(t, text, "&lt;перебор&gt;", "заголовок экранирован")
+
+	assert.Equal(t, "атаки из интернета · 129.226.55.176", muteSubject(&agentModel.Mute{Kind: "security", Key: "129.226.55.176"}))
+	assert.Equal(t, "все уведомления", muteSubject(&agentModel.Mute{}))
+	assert.Equal(t, "caravan · алерты", muteSubject(&agentModel.Mute{Service: "caravan", Kind: "alert"}))
+
+	assert.Equal(t, "атаки из интернета", subscriptionSubject(&agentModel.Subscription{Kind: "security"}))
+	assert.Equal(t, "атаки из интернета · только critical", subscriptionSubject(&agentModel.Subscription{Kind: "security", MinSeverity: "critical"}))
+	assert.Equal(t, "всё, кроме атак из интернета", subscriptionSubject(&agentModel.Subscription{}))
+	assert.Equal(t, "все сервисы · алерты", subscriptionSubject(&agentModel.Subscription{Kind: "alert"}))
+}
