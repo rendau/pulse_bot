@@ -31,6 +31,8 @@ type NotifyUsecaseI interface {
 	Mutes(ctx context.Context, chatId int64) ([]*agentModel.Mute, []*agentModel.Notification, error)
 	Subscriptions(ctx context.Context, chatId int64) ([]*agentModel.Subscription, error)
 	Unsubscribe(ctx context.Context, chatId, id int64) error
+	Block(ctx context.Context, chatId, userId int64, userName string, notificationId int64, duration string) (*agentModel.Block, error)
+	SkipBlock(ctx context.Context, chatId, userId int64, userName string, notificationId int64) (*agentModel.Block, error)
 }
 
 // SenderI — методы Bot API, которыми отвечает бот (реализует *bot.Bot).
@@ -40,4 +42,5 @@ type SenderI interface {
 	SendPhoto(ctx context.Context, params *bot.SendPhotoParams) (*models.Message, error)
 	SendDocument(ctx context.Context, params *bot.SendDocumentParams) (*models.Message, error)
 	AnswerCallbackQuery(ctx context.Context, params *bot.AnswerCallbackQueryParams) (bool, error)
+	EditMessageReplyMarkup(ctx context.Context, params *bot.EditMessageReplyMarkupParams) (*models.Message, error)
 }

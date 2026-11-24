@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,20 @@ type fakeNotify struct {
 	mutes        []*agentModel.Mute
 	subs         []*agentModel.Subscription
 	unsubscribed []int64
+	// блокировка: что вернуть и с чем вызвали (duration skip — не блокировать)
+	block      *agentModel.Block
+	blockErr   error
+	blockCalls []string
+}
+
+func (f *fakeNotify) Block(_ context.Context, _, _ int64, _ string, notificationId int64, duration string) (*agentModel.Block, error) {
+	f.blockCalls = append(f.blockCalls, fmt.Sprintf("%d:%s", notificationId, duration))
+	return f.block, f.blockErr
+}
+
+func (f *fakeNotify) SkipBlock(_ context.Context, _, _ int64, _ string, notificationId int64) (*agentModel.Block, error) {
+	f.blockCalls = append(f.blockCalls, fmt.Sprintf("%d:skip", notificationId))
+	return f.block, f.blockErr
 }
 
 func (f *fakeNotify) Subscriptions(context.Context, int64) ([]*agentModel.Subscription, error) {
@@ -87,7 +102,9 @@ func TestNotifierDeliver(t *testing.T) {
 	assert.Contains(t, msg.Text, "🟠 <b>caravan: после выкатки 8% сбоев</b>")
 	assert.Contains(t, msg.Text, "<b>сбои</b>")
 	assert.Contains(t, msg.Text, "<i>caravan · после выкатки · 26.09 17:35</i>")
-	buttons := msg.ReplyMarkup.(*models.InlineKeyboardMarkup).InlineKeyboard[0]
+	rows := msg.ReplyMarkup.(*models.InlineKeyboardMarkup).InlineKeyboard
+	require.Len(t, rows, 1, "не атака — без кнопок блокировки")
+	buttons := rows[0]
 	assert.Equal(t, "mute:41:1h", buttons[0].CallbackData)
 	assert.Equal(t, "mute:41:ever", buttons[2].CallbackData)
 
@@ -228,4 +245,165 @@ func TestSecurityLabels(t *testing.T) {
 	assert.Equal(t, "атаки из интернета · только critical", subscriptionSubject(&agentModel.Subscription{Kind: "security", MinSeverity: "critical"}))
 	assert.Equal(t, "всё, кроме атак из интернета", subscriptionSubject(&agentModel.Subscription{}))
 	assert.Equal(t, "все сервисы · алерты", subscriptionSubject(&agentModel.Subscription{Kind: "alert"}))
+}
+
+func TestNotificationKeyboard(t *testing.T) {
+	rows := notificationKeyboard(&agentModel.Notification{Id: 77, Kind: "security", Key: "203.0.113.7"}).InlineKeyboard
+	require.Len(t, rows, 2, "у атаки — ряд приглушения и ряд блокировки")
+	assert.Equal(t, "mute:77:1h", rows[0][0].CallbackData)
+	assert.Equal(t, []string{"⛔ Блок 24 ч", "⛔ Блок 7 дней", "Не блокировать"},
+		[]string{rows[1][0].Text, rows[1][1].Text, rows[1][2].Text})
+	assert.Equal(t, []string{"blk:77:1d", "blk:77:7d", "nblk:77"},
+		[]string{rows[1][0].CallbackData, rows[1][1].CallbackData, rows[1][2].CallbackData}, "в данных id, не адрес")
+
+	assert.Len(t, notificationKeyboard(&agentModel.Notification{Id: 77, Kind: "alert"}).InlineKeyboard, 1)
+
+	// callback_data — до 64 байт
+	for _, b := range blockRow(9_223_372_036_854_775_807) {
+		assert.LessOrEqual(t, len(b.CallbackData), 64)
+	}
+}
+
+func TestParseBlockChoice(t *testing.T) {
+	for data, want := range map[string]blockChoice{
+		"blk:77:1d": {notificationId: 77, duration: "24h"},
+		"blk:77:7d": {notificationId: 77, duration: "168h"},
+		"nblk:77":   {notificationId: 77, skip: true},
+	} {
+		got, ok := parseBlockChoice(data)
+		assert.True(t, ok, data)
+		assert.Equal(t, want, got, data)
+	}
+	for _, data := range []string{"blk:77", "blk:77:30d", "blk:x:1d", "blk:-1:1d", "blk:0:1d", "nblk:77:1d", "nblk:", "nblk", "mute:77:1d", "blk:77:1d:x"} {
+		_, ok := parseBlockChoice(data)
+		assert.False(t, ok, data)
+	}
+}
+
+// blockQuery — нажатие под уведомлением 77 (сообщение 500) в группе.
+func blockQuery(data string) *models.CallbackQuery {
+	cq := callbackQuery(group, data)
+	cq.Message.Message.ID = 500
+	return cq
+}
+
+func TestCallbackBlock(t *testing.T) {
+	until := time.Date(2026, 11, 25, 19, 40, 0, 0, time.Local)
+	ip := "203.0.113.7/32"
+
+	cases := []struct {
+		name      string
+		data      string
+		block     *agentModel.Block
+		call      string
+		answer    string
+		post      string
+		dropsRow  bool
+		withAlert bool
+	}{
+		{
+			name:  "заблокирован на сутки",
+			data:  "blk:77:1d",
+			block: &agentModel.Block{NotificationId: 77, Ip: ip, Action: "block", Until: &until, ByName: "Иван"},
+			call:  "77:24h", answer: "⛔ Заблокирован до 25.11 19:40",
+			post:     "⛔ Иван заблокировал <code>203.0.113.7/32</code> до 25.11 19:40",
+			dropsRow: true,
+		},
+		{
+			name:  "уже заблокирован в ruto человеком — без срока",
+			data:  "blk:77:7d",
+			block: &agentModel.Block{Ip: ip, Action: "block", ByName: "Иван"},
+			call:  "77:168h", answer: "⛔ Заблокирован без срока",
+			post:     "⛔ Иван заблокировал <code>203.0.113.7/32</code> без срока",
+			dropsRow: true,
+		},
+		{
+			name:  "не блокировать",
+			data:  "nblk:77",
+			block: &agentModel.Block{Ip: ip, Action: "skip", ByName: "Иван"},
+			call:  "77:skip", answer: "Не блокирую",
+			post:     "Иван: не блокировать <code>203.0.113.7/32</code>",
+			dropsRow: true,
+		},
+		{
+			name:  "повтор: уже решил другой админ",
+			data:  "blk:77:1d",
+			block: &agentModel.Block{Ip: ip, Action: "block", Until: &until, ByName: "Асель", Repeat: true},
+			call:  "77:24h", answer: "Уже заблокирован: Асель, до 25.11 19:40",
+			post:     "⛔ <code>203.0.113.7/32</code> уже заблокирован: Асель, до 25.11 19:40",
+			dropsRow: true,
+		},
+		{
+			name:  "повтор: уже решено не блокировать",
+			data:  "blk:77:1d",
+			block: &agentModel.Block{Ip: ip, Action: "skip", ByName: "Асель", Repeat: true},
+			call:  "77:24h", answer: "Уже решено не блокировать: Асель",
+			post:     "<code>203.0.113.7/32</code>: уже решено не блокировать (Асель)",
+			dropsRow: true,
+		},
+		{
+			name:  "ruto отказал — кнопки остаются",
+			data:  "blk:77:1d",
+			block: &agentModel.Block{Ip: ip, Action: "block", Refused: "адрес <в белом списке>"},
+			call:  "77:24h", answer: "ruto отказал: адрес <в белом списке>",
+			post: "ruto отказал: адрес &lt;в белом списке&gt;",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			notify, sender := &fakeNotify{block: c.block}, &fakeSender{}
+			New(&fakeChat{}, notify, 1, "pulse_bot").callback(context.Background(), sender, blockQuery(c.data))
+
+			assert.Equal(t, []string{c.call}, notify.blockCalls)
+			assert.Equal(t, []string{c.answer}, sender.answers)
+			require.Len(t, sender.sent, 1)
+			assert.Equal(t, c.post, sender.sent[0].Text)
+			if !c.dropsRow {
+				assert.Empty(t, sender.edits)
+				return
+			}
+			require.Len(t, sender.edits, 1)
+			edit := sender.edits[0]
+			assert.Equal(t, group, edit.ChatID)
+			assert.Equal(t, 500, edit.MessageID)
+			rows := edit.ReplyMarkup.(*models.InlineKeyboardMarkup).InlineKeyboard
+			require.Len(t, rows, 1, "ряд блокировки убран, приглушение осталось")
+			assert.Equal(t, "mute:77:1h", rows[0][0].CallbackData)
+		})
+	}
+}
+
+func TestCallbackBlockErrors(t *testing.T) {
+	for err, want := range map[error]string{
+		errs.NoPermission:  textBlockAdminsOnly,
+		errs.NotAuthorized: textCallbackDenied,
+		fmt.Errorf("%w: agent.Block: forbidden", errs.Forbidden): textBlockForbidden,
+		fmt.Errorf("agent.Block: %w", errs.ObjectNotFound):       textBlockStale,
+		fmt.Errorf("agent.Block: %w", errs.ServiceNA):            textBlockServiceNA,
+		fmt.Errorf("agent.Block: %w", errs.InvalidRequest):       textCallbackFailed,
+	} {
+		notify, sender := &fakeNotify{blockErr: err}, &fakeSender{}
+		New(&fakeChat{}, notify, 1, "pulse_bot").callback(context.Background(), sender, blockQuery("blk:77:1d"))
+
+		assert.Equal(t, []string{want}, sender.answers, err.Error())
+		assert.Equal(t, []bool{true}, sender.alerts, "отказ — окном")
+		assert.Empty(t, sender.sent, "в чат ничего")
+		assert.Empty(t, sender.edits, "кнопки на месте")
+	}
+
+	notify, sender := &fakeNotify{}, &fakeSender{}
+	New(&fakeChat{}, notify, 1, "pulse_bot").callback(context.Background(), sender, blockQuery("blk:77:30d"))
+	assert.Empty(t, notify.blockCalls, "испорченные данные — агенту не идём")
+	assert.Equal(t, []string{textCallbackStale}, sender.answers)
+}
+
+func TestCallbackTextLimit(t *testing.T) {
+	notify := &fakeNotify{block: &agentModel.Block{Refused: strings.Repeat("я", 1000)}}
+	sender := &fakeSender{}
+	New(&fakeChat{}, notify, 1, "pulse_bot").callback(context.Background(), sender, blockQuery("blk:77:1d"))
+
+	require.Len(t, sender.answers, 1)
+	assert.LessOrEqual(t, len([]rune(sender.answers[0])), 200, "answerCallbackQuery — до 200 символов")
+	require.Len(t, sender.sent, 1)
+	assert.Less(t, len([]rune(sender.sent[0].Text)), 600, "отказ в чате урезан")
 }

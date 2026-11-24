@@ -41,7 +41,14 @@ Telegram-бот (long polling, `github.com/go-telegram/bot`) — тонкий к
   ленту каждого разрешённого чата (`GET /v1/notifications` агента), присылает неприглушённые
   («🟠 заголовок», разбор, внизу — сервис · вид · время) с кнопками «🔕 1 ч / сутки / навсегда»
   (`mute:<id>:<срок>` → `POST /v1/mutes` по уведомлению — его сервис) и подтверждает (`ack`;
-  остановка — не подтверждаем, отказ Telegram — подтверждаем). `/muted` — приглушения чата, что
+  остановка — не подтверждаем, отказ Telegram — подтверждаем). Под атакой из интернета (вид
+  `security`, ключ — адрес) — второй ряд «⛔ Блок 24 ч / 7 дней / Не блокировать» (`blk:<id>:1d|7d`,
+  `nblk:<id>` — в данных id уведомления, не адрес) → `POST /v1/notifications/{id}/block` агента:
+  блокирует в ruto агент, у бота ключа ruto нет. Нажимать — только админам бота
+  (`TELEGRAM_ADMIN_USERS`, проверка в usecase по нажавшему; остальным — окно с отказом). Решено —
+  ряд блокировки убираем (`editMessageReplyMarkup`, приглушение остаётся), в чат — кто и что
+  решил (`repeat` — «уже заблокирован: кто, до …»); ruto отказал (`refused`) — кнопки остаются,
+  в чат — отказ. 403 агента — боту не разрешено (`BLOCK_CLIENTS` агента), 5xx — «ruto недоступен». `/muted` — приглушения чата, что
   скрыто, кнопки «🔔 Вернуть» (`unmute:<id>`). `/subs` — подписки чата (что приходит; уведомления по
   желанию: нет подписок — ничего; не по подпискам агент помечает `not_subscribed` — не присылаем,
   подтверждаем), кнопки «✖ Убрать» (`unsub:<id>`); подписаться — словами («присылайте нам всё про
@@ -64,10 +71,13 @@ Telegram-бот (long polling, `github.com/go-telegram/bot`) — тонкий к
   агент, метрики вопросов. Беседа в агенте — `constant.ConversationId` (`tg:<chat_id>`); `/reset` —
   `POST /v1/reset` агента.
 - `internal/usecase/notify/` — чаты уведомлений, кто может приглушать (`CanManage`), лента,
-  подтверждение, приглушения (всё хранит агент); подписки; метрика `notification_total{outcome}` (sent, muted, not_subscribed, failed).
+  подтверждение, приглушения (всё хранит агент); подписки; блокировка адреса атаки (`Block`,
+  `SkipBlock` — только админы бота, `errs.NoPermission`; 403 агента → `errs.Forbidden`); метрика `notification_total{outcome}` (sent, muted, not_subscribed, failed).
 - `internal/service/agent/` — клиент API pulse_agent (раскладка — скилл `golang-service`):
-  `POST /v1/ask` с `format=telegram`, `charts=png`, `user` — id и имя из Telegram; коды ошибок
-  агента → `internal/errs` (`busy` → `Busy`, `timeout` → `DeadlineExceeded`, прочее → `ServiceNA`).
+  `POST /v1/ask` с `format=telegram`, `charts=png`, `user` — id и имя из Telegram; уведомления,
+  приглушения, подписки, `POST /v1/notifications/{id}/block`; коды ошибок
+  агента → `internal/errs` (`busy` → `Busy`, `timeout` → `DeadlineExceeded`, `forbidden` → `NotAuthorized`,
+  `not_found` → `ObjectNotFound`, `invalid_request` → `InvalidRequest`, прочее → `ServiceNA`).
 - `internal/infra/httpx/` — единая фабрика http-клиентов (таймауты, лимиты; все клиенты только через неё).
 - `internal/infra/metrics/` — реестр Prometheus.
 - `internal/util/tgmd/` — Markdown → Telegram HTML и нарезка сообщения (с тестами).
@@ -166,7 +176,7 @@ handler`) и жизненный цикл. Бизнес-логики тут не�
 - Обязательные: `TELEGRAM_BOT_TOKEN`, `AGENT_URL` (`http://pulse-agent.default`); `AGENT_KEY` — ключ
   бота в `API_KEYS` агента (бот должен быть и в `EVAL_CLIENTS` агента — для `/eval`).
   `TELEGRAM_ALLOWED_CHAT_IDS` — разрешённые чаты через запятую (личные — ID человека, группы — с
-  минусом); `TELEGRAM_ADMIN_USERS` — кому можно `/eval` и кому бот пишет id группы, в которую его
+  минусом); `TELEGRAM_ADMIN_USERS` — кому можно `/eval` и кнопки блокировки адреса атаки, кому бот пишет id группы, в которую его
   добавили; их личные чаты разрешены автоматически; оба
   пусты — бот отказывает всем (предупреждение в логе). `AGENT_TIMEOUT` (6m) — ожидание ответа,
   `AGENT_EVAL_TIMEOUT` (21m) — прогона, `NOTIFY_POLL_INTERVAL` (20s) — опрос ленты агента по каждому

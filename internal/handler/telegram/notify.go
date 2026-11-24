@@ -26,7 +26,22 @@ const (
 	cbMute        = "mute"   // mute:<id уведомления>:<срок из muteOptions>
 	cbUnmute      = "unmute" // unmute:<id приглушения>
 	cbUnsubscribe = "unsub"  // unsub:<id подписки>
+	cbBlock       = "blk"    // blk:<id уведомления>:<срок из blockOptions> — адрес атаки (в данных — не адрес, а id)
+	cbSkipBlock   = "nblk"   // nblk:<id уведомления> — не блокировать
 )
+
+const (
+	// callbackTextLimit — текст answerCallbackQuery в Telegram до 200 символов
+	callbackTextLimit = 200
+	// refusedLimit — сколько текста отказа ruto показывать в чате
+	refusedLimit = 500
+)
+
+// blockOptions — кнопки блокировки адреса атаки: код в данных кнопки, срок для агента, подпись.
+var blockOptions = []struct{ code, duration, label string }{
+	{"1d", "24h", "24 ч"},
+	{"7d", "168h", "7 дней"},
+}
 
 // muteOptions — кнопки приглушения под уведомлением: код в данных кнопки, срок для агента, подпись.
 var muteOptions = []struct{ code, duration, label string }{
@@ -129,7 +144,7 @@ func sendNotification(ctx context.Context, sender SenderI, chatId int64, n *agen
 		ChatID:      chatId,
 		Text:        renderNotification(n, tgmd.ToHTML(lo.FirstOr(body, ""))),
 		ParseMode:   models.ParseModeHTML,
-		ReplyMarkup: muteKeyboard(n),
+		ReplyMarkup: notificationKeyboard(n),
 	}
 	if _, err := sender.SendMessage(ctx, params); err != nil {
 		slog.Warn("notify: send html failed, fallback to plain text", "chat_id", chatId, "error", err)
@@ -151,17 +166,67 @@ func renderNotification(n *agentModel.Notification, bodyHtml string) string {
 		lo.CoalesceOrEmpty(severityIcons[n.Severity], "🔔"), html.EscapeString(n.Title), bodyHtml, strings.Join(footer, " · "))
 }
 
-func muteKeyboard(n *agentModel.Notification) *models.InlineKeyboardMarkup {
-	row := lo.Map(muteOptions, func(o struct{ code, duration, label string }, _ int) models.InlineKeyboardButton {
-		return models.InlineKeyboardButton{
-			Text:         "🔕 " + o.label,
-			CallbackData: fmt.Sprintf("%s:%d:%s", cbMute, n.Id, o.code),
-		}
-	})
-	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{row}}
+// notificationKeyboard — кнопки приглушения; у атаки из интернета — ещё ряд блокировки адреса в ruto.
+func notificationKeyboard(n *agentModel.Notification) *models.InlineKeyboardMarkup {
+	rows := [][]models.InlineKeyboardButton{muteRow(n.Id)}
+	if n.Kind == kindSecurity {
+		rows = append(rows, blockRow(n.Id))
+	}
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
-// callback — нажатие кнопки: приглушить сервис уведомления или вернуть приглушённое.
+func muteRow(notificationId int64) []models.InlineKeyboardButton {
+	return lo.Map(muteOptions, func(o struct{ code, duration, label string }, _ int) models.InlineKeyboardButton {
+		return models.InlineKeyboardButton{
+			Text:         "🔕 " + o.label,
+			CallbackData: fmt.Sprintf("%s:%d:%s", cbMute, notificationId, o.code),
+		}
+	})
+}
+
+func blockRow(notificationId int64) []models.InlineKeyboardButton {
+	row := lo.Map(blockOptions, func(o struct{ code, duration, label string }, _ int) models.InlineKeyboardButton {
+		return models.InlineKeyboardButton{
+			Text:         "⛔ Блок " + o.label,
+			CallbackData: fmt.Sprintf("%s:%d:%s", cbBlock, notificationId, o.code),
+		}
+	})
+	return append(row, models.InlineKeyboardButton{
+		Text:         "Не блокировать",
+		CallbackData: fmt.Sprintf("%s:%d", cbSkipBlock, notificationId),
+	})
+}
+
+// blockChoice — нажатая кнопка блокировки: уведомление и срок для агента (skip — не блокировать).
+type blockChoice struct {
+	notificationId int64
+	duration       string
+	skip           bool
+}
+
+// parseBlockChoice — данные кнопки blk:<id>:<код срока> или nblk:<id>; ok false — не кнопка
+// блокировки или испорчена.
+func parseBlockChoice(data string) (blockChoice, bool) {
+	parts := strings.Split(data, ":")
+	if len(parts) < 2 {
+		return blockChoice{}, false
+	}
+	id, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || id <= 0 {
+		return blockChoice{}, false
+	}
+	switch {
+	case len(parts) == 2 && parts[0] == cbSkipBlock:
+		return blockChoice{notificationId: id, skip: true}, true
+	case len(parts) == 3 && parts[0] == cbBlock:
+		option, ok := lo.Find(blockOptions, func(o struct{ code, duration, label string }) bool { return o.code == parts[2] })
+		return blockChoice{notificationId: id, duration: option.duration}, ok
+	}
+	return blockChoice{}, false
+}
+
+// callback — нажатие кнопки: приглушить сервис уведомления или вернуть приглушённое, убрать
+// подписку, решить, блокировать ли адрес атаки.
 func (h *Handler) callback(ctx context.Context, sender SenderI, cq *models.CallbackQuery) {
 	chat := callbackChat(cq)
 	if chat == 0 || h.notify == nil {
@@ -205,9 +270,108 @@ func (h *Handler) callback(ctx context.Context, sender SenderI, cq *models.Callb
 		h.answerCallback(ctx, sender, cq, textUnsubscribedShort)
 		h.sendText(ctx, sender, chat, fmt.Sprintf(textUnsubscribed, html.EscapeString(lo.CoalesceOrEmpty(name, "кто-то"))))
 
+	case parts[0] == cbBlock, parts[0] == cbSkipBlock:
+		choice, ok := parseBlockChoice(cq.Data)
+		if !ok {
+			h.answerCallback(ctx, sender, cq, textCallbackStale)
+			return
+		}
+		h.block(ctx, sender, cq, chat, name, choice)
+
 	default:
 		h.answerCallback(ctx, sender, cq, textCallbackStale)
 	}
+}
+
+// block — решение админа по адресу атаки (блокирует pulse_agent в ruto): решено — ряд блокировки
+// убираем (приглушение остаётся) и пишем в чат, кто и что решил; ruto отказал — кнопки остаются.
+func (h *Handler) block(ctx context.Context, sender SenderI, cq *models.CallbackQuery, chat int64, name string, choice blockChoice) {
+	var res *agentModel.Block
+	var err error
+	if choice.skip {
+		res, err = h.notify.SkipBlock(ctx, chat, cq.From.ID, name, choice.notificationId)
+	} else {
+		res, err = h.notify.Block(ctx, chat, cq.From.ID, name, choice.notificationId, choice.duration)
+	}
+	if err != nil {
+		h.answerAlert(ctx, sender, cq, blockError(err))
+		return
+	}
+
+	ip := html.EscapeString(res.Ip)
+	by := lo.CoalesceOrEmpty(res.ByName, name, "кто-то")
+	switch {
+	case res.Refused != "":
+		h.answerCallback(ctx, sender, cq, fmt.Sprintf(textBlockRefused, res.Refused))
+		h.sendText(ctx, sender, chat, fmt.Sprintf(textBlockRefused, html.EscapeString(truncate(res.Refused, refusedLimit))))
+		return
+
+	case res.Repeat && res.Action == agentModel.BlockActionSkip:
+		h.answerCallback(ctx, sender, cq, fmt.Sprintf(textBlockSkipRepeatShort, by))
+		h.sendText(ctx, sender, chat, fmt.Sprintf(textBlockSkipRepeat, ip, html.EscapeString(by)))
+
+	case res.Repeat:
+		h.answerCallback(ctx, sender, cq, fmt.Sprintf(textBlockRepeatShort, by, blockTerm(res.Until)))
+		h.sendText(ctx, sender, chat, fmt.Sprintf(textBlockRepeat, ip, html.EscapeString(by), blockTerm(res.Until)))
+
+	case res.Action == agentModel.BlockActionSkip:
+		h.answerCallback(ctx, sender, cq, textBlockSkippedShort)
+		h.sendText(ctx, sender, chat, fmt.Sprintf(textBlockSkipped, html.EscapeString(by), ip))
+
+	default:
+		h.answerCallback(ctx, sender, cq, fmt.Sprintf(textBlockedShort, blockTerm(res.Until)))
+		h.sendText(ctx, sender, chat, fmt.Sprintf(textBlocked, html.EscapeString(by), ip, blockTerm(res.Until)))
+	}
+	h.dropBlockRow(ctx, sender, cq, choice.notificationId)
+}
+
+// blockTerm — «до 25.11 19:40» в поясе бота (TZ пода — Asia/Almaty) или «без срока».
+func blockTerm(until *time.Time) string {
+	if until == nil {
+		return textBlockNoEnd
+	}
+	return "до " + until.Local().Format("02.01 15:04")
+}
+
+// dropBlockRow — под уведомлением остаются только кнопки приглушения.
+func (h *Handler) dropBlockRow(ctx context.Context, sender SenderI, cq *models.CallbackQuery, notificationId int64) {
+	var messageId int
+	switch {
+	case cq.Message.Message != nil:
+		messageId = cq.Message.Message.ID
+	case cq.Message.InaccessibleMessage != nil:
+		messageId = cq.Message.InaccessibleMessage.MessageID
+	}
+	if messageId == 0 {
+		return
+	}
+	_, err := sender.EditMessageReplyMarkup(ctx, &bot.EditMessageReplyMarkupParams{
+		ChatID:      callbackChat(cq),
+		MessageID:   messageId,
+		ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{muteRow(notificationId)}},
+	})
+	if err != nil {
+		slog.Warn("telegram: edit reply markup", "chat_id", callbackChat(cq), "message_id", messageId, "error", err)
+	}
+}
+
+// blockError — почему решение по адресу не прошло.
+func blockError(err error) string {
+	switch {
+	case errors.Is(err, errs.NoPermission):
+		return textBlockAdminsOnly
+	case errors.Is(err, errs.NotAuthorized):
+		return textCallbackDenied
+	case errors.Is(err, errs.Forbidden):
+		return textBlockForbidden
+	case errors.Is(err, errs.ObjectNotFound):
+		return textBlockStale
+	case errors.Is(err, errs.ServiceNA), errors.Is(err, context.DeadlineExceeded):
+		slog.Warn("notify: block", "error", err)
+		return textBlockServiceNA
+	}
+	slog.Error("notify: block", "error", err)
+	return textCallbackFailed
 }
 
 // subscriptions — /subs: что приходит в чат, кнопки «убрать».
@@ -379,8 +543,19 @@ func callbackError(err error) string {
 	return textCallbackFailed
 }
 
+// answerCallback — короткая всплывающая подсказка нажавшему.
 func (h *Handler) answerCallback(ctx context.Context, sender SenderI, cq *models.CallbackQuery, text string) {
-	if _, err := sender.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: cq.ID, Text: text}); err != nil {
+	h.answerCallbackQuery(ctx, sender, cq, text, false)
+}
+
+// answerAlert — окно с кнопкой «ОК»: отказ, который нажавший должен прочитать.
+func (h *Handler) answerAlert(ctx context.Context, sender SenderI, cq *models.CallbackQuery, text string) {
+	h.answerCallbackQuery(ctx, sender, cq, text, true)
+}
+
+func (h *Handler) answerCallbackQuery(ctx context.Context, sender SenderI, cq *models.CallbackQuery, text string, alert bool) {
+	params := &bot.AnswerCallbackQueryParams{CallbackQueryID: cq.ID, Text: truncate(text, callbackTextLimit-1), ShowAlert: alert}
+	if _, err := sender.AnswerCallbackQuery(ctx, params); err != nil {
 		slog.Warn("telegram: answer callback", "error", err)
 	}
 }

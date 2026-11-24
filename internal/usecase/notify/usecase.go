@@ -5,6 +5,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -37,11 +38,14 @@ func init() {
 type Config struct {
 	// AllowedChats — разрешённые чаты: читают ленту и настраивают уведомления (в группе — любой участник)
 	AllowedChats []int64
+	// AdminUsers — админы бота: только они решают, блокировать ли адрес атаки
+	AdminUsers []int64
 }
 
 type Usecase struct {
 	chats   []int64
 	allowed map[int64]struct{}
+	admins  map[int64]struct{}
 	agent   AgentI
 }
 
@@ -49,6 +53,7 @@ func New(cfg Config, agent AgentI) *Usecase {
 	return &Usecase{
 		chats:   lo.Uniq(cfg.AllowedChats),
 		allowed: lo.SliceToMap(cfg.AllowedChats, func(id int64) (int64, struct{}) { return id, struct{}{} }),
+		admins:  lo.SliceToMap(cfg.AdminUsers, func(id int64) (int64, struct{}) { return id, struct{}{} }),
 		agent:   agent,
 	}
 }
@@ -145,4 +150,38 @@ func (u *Usecase) Unsubscribe(ctx context.Context, chatId, id int64) error {
 		return fmt.Errorf("agent.Unsubscribe: %w", err)
 	}
 	return nil
+}
+
+// Block — заблокировать в ruto адрес атаки уведомления на duration (24h, 168h); блокирует агент. Ошибки:
+// errs.NotAuthorized — чат не разрешён; errs.NoPermission — не админ бота; errs.Forbidden — агент
+// не разрешает боту блокировать.
+func (u *Usecase) Block(ctx context.Context, chatId, userId int64, userName string, notificationId int64, duration string) (*agentModel.Block, error) {
+	return u.decideBlock(ctx, chatId, userId, userName, notificationId, agentModel.BlockActionBlock, duration)
+}
+
+// SkipBlock — решить не блокировать адрес атаки уведомления. Ошибки — как у Block.
+func (u *Usecase) SkipBlock(ctx context.Context, chatId, userId int64, userName string, notificationId int64) (*agentModel.Block, error) {
+	return u.decideBlock(ctx, chatId, userId, userName, notificationId, agentModel.BlockActionSkip, "")
+}
+
+func (u *Usecase) decideBlock(ctx context.Context, chatId, userId int64, userName string, notificationId int64, action, duration string) (*agentModel.Block, error) {
+	if !u.CanManage(chatId) {
+		return nil, errs.NotAuthorized
+	}
+	// кнопки в группе видят все участники — решают только админы бота
+	if _, ok := u.admins[userId]; !ok {
+		return nil, errs.NoPermission
+	}
+	b, err := u.agent.Block(ctx, &agentModel.BlockReq{
+		ConversationId: constant.ConversationId(chatId), NotificationId: notificationId, Action: action, Duration: duration,
+		UserId: strconv.FormatInt(userId, 10), UserName: userName,
+	})
+	if err != nil {
+		// 403 агента здесь — не чат и не человек (их проверили выше), а сам бот без права блокировать
+		if errors.Is(err, errs.NotAuthorized) {
+			return nil, fmt.Errorf("%w: agent.Block: %v", errs.Forbidden, err)
+		}
+		return nil, fmt.Errorf("agent.Block: %w", err)
+	}
+	return b, nil
 }

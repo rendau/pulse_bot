@@ -29,6 +29,8 @@ const (
 	ackPath           = "/v1/notifications/ack"
 	mutesPath         = "/v1/mutes"
 	subscriptionsPath = "/v1/subscriptions"
+	// blockPathFmt — решение по адресу атаки уведомления: /v1/notifications/{id}/block
+	blockPathFmt = "/v1/notifications/%d/block"
 
 	maxBodyBytes = 16 << 20 // ответ с тремя графиками в base64 — сотни КБ
 )
@@ -136,6 +138,18 @@ func (s *Service) Subscriptions(ctx context.Context, conversationId string) ([]*
 func (s *Service) Unsubscribe(ctx context.Context, conversationId string, id int64) error {
 	q := url.Values{"conversation_id": {conversationId}}
 	return s.sendRequest(ctx, http.MethodDelete, subscriptionsPath+"/"+strconv.FormatInt(id, 10)+"?"+q.Encode(), nil, &struct{}{})
+}
+
+func (s *Service) Block(ctx context.Context, req *agentModel.BlockReq) (*agentModel.Block, error) {
+	rep := &blockRep{}
+	err := s.sendRequest(ctx, http.MethodPost, fmt.Sprintf(blockPathFmt, req.NotificationId), &blockReq{
+		ConversationId: req.ConversationId, Action: req.Action, Duration: req.Duration,
+		User: userReq{Id: req.UserId, Name: req.UserName},
+	}, rep)
+	if err != nil {
+		return nil, err
+	}
+	return decodeBlock(rep)
 }
 
 // sendRequest — единственная точка отправки: JSON, ключ, коды ошибок API → errs.
@@ -331,4 +345,49 @@ func decodeMute(v muteRep, _ int) *agentModel.Mute {
 		Id: v.Id, Service: v.Service, Kind: v.Kind, Key: v.Key, Until: v.Until, Note: v.Note,
 		CreatedBy: v.CreatedBy, Suppressed: v.Suppressed,
 	}
+}
+
+type blockReq struct {
+	ConversationId string  `json:"conversation_id"`
+	Action         string  `json:"action"`
+	Duration       string  `json:"duration,omitempty"`
+	User           userReq `json:"user"`
+}
+
+type blockRep struct {
+	NotificationId int64   `json:"notification_id"`
+	Ip             string  `json:"ip"`
+	Action         string  `json:"action"`
+	Until          string  `json:"until"` // RFC3339; пусто — skip или без срока
+	By             userReq `json:"by"`
+	At             string  `json:"at"`
+	Repeat         bool    `json:"repeat"`
+	Refused        string  `json:"refused"`
+}
+
+func decodeBlock(v *blockRep) (*agentModel.Block, error) {
+	until, err := parseOptionalTime(v.Until)
+	if err != nil {
+		return nil, fmt.Errorf("decode block until: %w", err)
+	}
+	at, err := parseOptionalTime(v.At)
+	if err != nil {
+		return nil, fmt.Errorf("decode block at: %w", err)
+	}
+	return &agentModel.Block{
+		NotificationId: v.NotificationId, Ip: v.Ip, Action: v.Action, Until: until, ByName: v.By.Name,
+		At: lo.FromPtr(at), Repeat: v.Repeat, Refused: v.Refused,
+	}, nil
+}
+
+// parseOptionalTime — время RFC3339; пустая строка — nil.
+func parseOptionalTime(s string) (*time.Time, error) {
+	if s == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }

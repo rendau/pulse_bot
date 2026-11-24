@@ -1,8 +1,9 @@
 package model
 
-import "encoding/json"
-
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // причины, по которым агент закончил разбор досрочно (Answer.Incomplete)
 const (
@@ -95,4 +96,34 @@ type MuteReq struct {
 	Duration       string
 	UserId         string
 	UserName       string
+}
+
+// решение по адресу атаки (BlockReq.Action, Block.Action)
+const (
+	BlockActionBlock = "block"
+	BlockActionSkip  = "skip"
+)
+
+// BlockReq — решение админа по адресу атаки уведомления NotificationId (вид security): заблокировать
+// в ruto на Duration (24h, 168h) или не блокировать (skip, без Duration). Блокирует агент.
+type BlockReq struct {
+	ConversationId string
+	NotificationId int64
+	Action         string
+	Duration       string
+	UserId         string
+	UserName       string
+}
+
+// Block — что стало с адресом: Refused непуст — ruto отказал, адрес не заблокирован; Repeat — решение
+// уже было принято раньше (By, At, Until — того решения); Until nil — skip или блок без срока.
+type Block struct {
+	NotificationId int64
+	Ip             string
+	Action         string
+	Until          *time.Time
+	ByName         string
+	At             time.Time
+	Repeat         bool
+	Refused        string
 }

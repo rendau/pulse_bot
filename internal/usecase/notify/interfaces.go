@@ -14,4 +14,5 @@ type AgentI interface {
 	Mutes(ctx context.Context, conversationId string, mutedLimit int) ([]*agentModel.Mute, []*agentModel.Notification, error)
 	Subscriptions(ctx context.Context, conversationId string) ([]*agentModel.Subscription, error)
 	Unsubscribe(ctx context.Context, conversationId string, id int64) error
+	Block(ctx context.Context, req *agentModel.BlockReq) (*agentModel.Block, error)
 }

@@ -19,6 +19,8 @@ const (
 	InvalidRequest = Err("invalid_request")
 	// Busy — в чате уже идёт разбор предыдущего вопроса
 	Busy = Err("busy")
+	// Forbidden — агент не разрешает боту действие (блокировка адресов: бота нет в BLOCK_CLIENTS агента)
+	Forbidden = Err("forbidden")
 )
 
 type ErrFull struct {

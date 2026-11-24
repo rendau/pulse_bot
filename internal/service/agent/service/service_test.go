@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -134,4 +135,70 @@ func TestNotifyApi(t *testing.T) {
 		"POST /v1/mutes",
 		"DELETE /v1/mutes/9?conversation_id=tg%3A-100",
 	}, calls)
+}
+
+func TestBlock(t *testing.T) {
+	status, rep := http.StatusOK, ""
+	var path string
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.Method + " " + r.URL.Path
+		assert.Equal(t, "Bearer k-bot", r.Header.Get("Authorization"))
+		got = nil
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(rep))
+	}))
+	defer srv.Close()
+	s := New(srv.URL, "k-bot", srv.Client())
+	ctx := context.Background()
+
+	rep = `{"notification_id":77,"ip":"203.0.113.7/32","action":"block","until":"2026-11-25T19:40:00+05:00",
+		"by":{"id":"42","name":"Даурен"},"at":"2026-11-24T19:40:00+05:00","repeat":false,"refused":""}`
+	b, err := s.Block(ctx, &agentModel.BlockReq{ConversationId: "tg:-100", NotificationId: 77, Action: "block", Duration: "24h", UserId: "42", UserName: "Даурен"})
+	require.NoError(t, err)
+	assert.Equal(t, "POST /v1/notifications/77/block", path)
+	assert.Equal(t, map[string]any{"conversation_id": "tg:-100", "action": "block", "duration": "24h",
+		"user": map[string]any{"id": "42", "name": "Даурен"}}, got)
+	assert.Equal(t, int64(77), b.NotificationId)
+	assert.Equal(t, "203.0.113.7/32", b.Ip)
+	assert.Equal(t, "Даурен", b.ByName)
+	require.NotNil(t, b.Until)
+	assert.True(t, time.Date(2026, 11, 25, 14, 40, 0, 0, time.UTC).Equal(*b.Until))
+	assert.False(t, b.At.IsZero())
+
+	rep = `{"notification_id":77,"ip":"203.0.113.7/32","action":"skip","until":"","by":{"id":"42","name":"Даурен"},
+		"at":"2026-11-24T19:40:00+05:00","repeat":true,"refused":""}`
+	b, err = s.Block(ctx, &agentModel.BlockReq{ConversationId: "tg:-100", NotificationId: 77, Action: "skip", UserId: "42"})
+	require.NoError(t, err)
+	assert.NotContains(t, got, "duration", "у skip срока нет")
+	assert.Equal(t, "skip", b.Action)
+	assert.Nil(t, b.Until)
+	assert.True(t, b.Repeat)
+
+	rep = `{"notification_id":77,"ip":"203.0.113.7/32","action":"block","until":"","by":{},"at":"","refused":"адрес в белом списке"}`
+	b, err = s.Block(ctx, &agentModel.BlockReq{NotificationId: 77, Action: "block", Duration: "168h"})
+	require.NoError(t, err)
+	assert.Equal(t, "адрес в белом списке", b.Refused)
+
+	rep = `{"notification_id":77,"until":"завтра"}`
+	_, err = s.Block(ctx, &agentModel.BlockReq{NotificationId: 77, Action: "block"})
+	require.Error(t, err)
+
+	for st, want := range map[int]error{
+		http.StatusForbidden:          errs.NotAuthorized,
+		http.StatusNotFound:           errs.ObjectNotFound,
+		http.StatusBadRequest:         errs.InvalidRequest,
+		http.StatusServiceUnavailable: errs.ServiceNA,
+	} {
+		status = st
+		rep = map[int]string{
+			http.StatusForbidden:          `{"code":"forbidden","error":"bot is not in BLOCK_CLIENTS"}`,
+			http.StatusNotFound:           `{"code":"not_found","error":"notification 77"}`,
+			http.StatusBadRequest:         `{"code":"invalid_request","error":"bad duration"}`,
+			http.StatusServiceUnavailable: `{"code":"service_unavailable","error":"ruto is down"}`,
+		}[st]
+		_, err = s.Block(ctx, &agentModel.BlockReq{NotificationId: 77, Action: "block", Duration: "24h"})
+		require.ErrorIs(t, err, want, st)
+	}
 }

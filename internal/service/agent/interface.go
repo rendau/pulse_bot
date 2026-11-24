@@ -25,4 +25,6 @@ type Agent interface {
 	// Subscriptions — подписки беседы (пусто — приходит всё)
 	Subscriptions(ctx context.Context, conversationId string) ([]*agentModel.Subscription, error)
 	Unsubscribe(ctx context.Context, conversationId string, id int64) error
+	// Block — заблокировать в ruto адрес атаки уведомления или решить не блокировать (ключа ruto у бота нет)
+	Block(ctx context.Context, req *agentModel.BlockReq) (*agentModel.Block, error)
 }

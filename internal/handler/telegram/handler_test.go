@@ -55,7 +55,16 @@ type fakeSender struct {
 	photos   []*bot.SendPhotoParams
 	docs     []*bot.SendDocumentParams
 	answers  []string
+	alerts   []bool
+	edits    []*bot.EditMessageReplyMarkupParams
 	failHtml bool
+}
+
+func (f *fakeSender) EditMessageReplyMarkup(_ context.Context, p *bot.EditMessageReplyMarkupParams) (*models.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.edits = append(f.edits, p)
+	return &models.Message{}, nil
 }
 
 func (f *fakeSender) SendPhoto(_ context.Context, p *bot.SendPhotoParams) (*models.Message, error) {
@@ -91,6 +100,7 @@ func (f *fakeSender) AnswerCallbackQuery(_ context.Context, p *bot.AnswerCallbac
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.answers = append(f.answers, p.Text)
+	f.alerts = append(f.alerts, p.ShowAlert)
 	return true, nil
 }
 

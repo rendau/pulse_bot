@@ -52,6 +52,23 @@ const (
 	textCallbackStale     = "Кнопка устарела"
 	textCallbackDenied    = "Вам нельзя менять уведомления этого чата"
 	textCallbackFailed    = "Не получилось — попробуйте позже"
+
+	// блокировка адреса атаки в ruto: кнопки под уведомлением вида security, решают админы бота;
+	// блокирует pulse_agent. Срок — «до 25.11 19:40» или textBlockNoEnd.
+	textBlocked              = "⛔ %s заблокировал <code>%s</code> %s"
+	textBlockedShort         = "⛔ Заблокирован %s"
+	textBlockSkipped         = "%s: не блокировать <code>%s</code>"
+	textBlockSkippedShort    = "Не блокирую"
+	textBlockRepeat          = "⛔ <code>%s</code> уже заблокирован: %s, %s"
+	textBlockRepeatShort     = "Уже заблокирован: %s, %s"
+	textBlockSkipRepeat      = "<code>%s</code>: уже решено не блокировать (%s)"
+	textBlockSkipRepeatShort = "Уже решено не блокировать: %s"
+	textBlockRefused         = "ruto отказал: %s"
+	textBlockNoEnd           = "без срока"
+	textBlockAdminsOnly      = "Блокировать могут только админы бота"
+	textBlockForbidden       = "Боту не разрешено блокировать (BLOCK_CLIENTS в pulse_agent)"
+	textBlockStale           = "Уведомление устарело"
+	textBlockServiceNA       = "ruto недоступен, попробуйте позже"
 	// textReplyContext — вопрос ответом на сообщение бота: что это было за сообщение
 	textReplyContext = "Ответ на сообщение бота:\n«%s»\n\n%s"
 

@@ -80,7 +80,7 @@ func (a *App) Init() {
 	}, agentService)
 
 	// notify (уведомления агента: разрешённые чаты, что приходит — по их подпискам)
-	notifyUsecase := usecaseNotifyP.New(usecaseNotifyP.Config{AllowedChats: allowedChats}, agentService)
+	notifyUsecase := usecaseNotifyP.New(usecaseNotifyP.Config{AllowedChats: allowedChats, AdminUsers: config.Conf.TelegramAdminUsers}, agentService)
 
 	// telegram
 	{
